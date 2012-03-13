@@ -370,6 +370,9 @@ int main(int argc, char *argv[]) {
 		printf("Connecting USB power to FPGA...\n");
 		fStatus = flPortAccess(handle, 0x0080, 0x0080, NULL, &error);
 		CHECK(fStatus, FLP_LIBERR);
+
+		// 100ms delay to allow power to settle
+		flSleep(100);
 	}
 
 	isNeroCapable = flIsNeroCapable(handle);
