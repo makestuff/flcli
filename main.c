@@ -180,7 +180,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				file = NULL;
 			} else {
 				int oldLength = dataFromFPGA.length;
-				bStatus = bufAppendZeros(&dataFromFPGA, length, NULL, error);
+				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK(bStatus, FLP_LIBERR);
 				fStatus = flReadRegister(handle, 32000, (uint8)reg, length, dataFromFPGA.data + oldLength, error);
 				CHECK(fStatus, FLP_LIBERR);
