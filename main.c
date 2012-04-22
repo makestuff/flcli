@@ -286,14 +286,15 @@ int main(int argc, char *argv[]) {
 	ReturnCode returnCode = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "         vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          vendor ID and product ID (e.g 04B4:8613)");
-	struct arg_file *fileOpt = arg_file0("x", "xsvf", "<fileName>", "       XSVF or CSVF file to load");
+	struct arg_str *jtagOpt = arg_str0("j", "jtag", "<portSpec>", "          JTAG port config (e.g D0234)");
+	struct arg_file *fileOpt = arg_file0("x", "xsvf", "<fileName>", "       SVF, XSVF or CSVF file to load");
 	struct arg_lit *powOpt = arg_lit0("p", "power", "                 FPGA is powered from USB (Nexys2 only!)");
 	struct arg_lit *scanOpt = arg_lit0("s", "scan", "                  scan the JTAG chain");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
 	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                  start up an interactive CommFPGA session");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, jtagOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -330,15 +331,24 @@ int main(int argc, char *argv[]) {
 
 	vp = vpOpt->sval[0];
 
+	if ( !ivpOpt->count && jtagOpt->count ) {
+		errRender(&error, "You can't specify --jtag without --ivp");
+		FAIL(FLP_ARGS);
+	}
+
 	printf("Attempting to open connection to FPGALink device %s...\n", vp);
 	fStatus = flOpen(vp, &handle, NULL);
 	if ( fStatus ) {
 		if ( ivpOpt->count ) {
 			int count = 60;
 			bool flag;
+			const char *jtagPort = "D0234";
+			if ( jtagOpt->count ) {
+				jtagPort = jtagOpt->sval[0];
+			}
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
-			fStatus = flLoadStandardFirmware(ivp, vp, &error);
+			fStatus = flLoadStandardFirmware(ivp, vp, jtagPort, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			
 			printf("Awaiting renumeration");
