@@ -67,7 +67,7 @@ static const char *const errMessages[] = {
 	NULL,
 	NULL,
 	"Unparseable hex number",
-	"Register out of range",
+	"Channel out of range",
 	"Illegal character",
 	"Unterminated string",
 	"No memory",
@@ -82,7 +82,7 @@ typedef enum {
 	FLP_SUCCESS,
 	FLP_LIBERR,
 	FLP_BAD_HEX,
-	FLP_REG_RANGE,
+	FLP_CHAN_RANGE,
 	FLP_ILL_CHAR,
 	FLP_UNTERM_STRING,
 	FLP_NO_MEMORY,
@@ -115,18 +115,18 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 		}
 		switch ( *ptr ) {
 		case 'r':{
-			uint32 reg;
+			uint32 chan;
 			uint32 length = 1;
 			char *end;
 			ptr++;
 			
-			// Get the register to be read:
+			// Get the channel to be read:
 			errno = 0;
-			reg = strtoul(ptr, &end, 16);
+			chan = strtoul(ptr, &end, 16);
 			CHECK(errno, FLP_BAD_HEX);
 
 			// Ensure that it's 0-127
-			CHECK(reg > 127, FLP_REG_RANGE);
+			CHECK(chan > 127, FLP_CHAN_RANGE);
 			ptr = end;
 
 			// Only three valid chars at this point:
@@ -166,7 +166,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			if ( fileName ) {
 				uint32 bytesWritten;
 				data = malloc(length);
-				fStatus = flReadRegister(handle, 32000, (uint8)reg, length, data, error);
+				fStatus = flReadChannel(handle, 32000, (uint8)chan, length, data, error);
 				CHECK(fStatus, FLP_LIBERR);
 				file = fopen(fileName, "wb");
 				CHECK(!file, FLP_CANNOT_SAVE);
@@ -182,24 +182,24 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				int oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK(bStatus, FLP_LIBERR);
-				fStatus = flReadRegister(handle, 32000, (uint8)reg, length, dataFromFPGA.data + oldLength, error);
+				fStatus = flReadChannel(handle, 32000, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 				CHECK(fStatus, FLP_LIBERR);
 			}
 			break;
 		}
 		case 'w':{
-			unsigned long int reg;
+			unsigned long int chan;
 			uint32 length = 1, i;
 			char *end;
 			ptr++;
 			
-			// Get the register to be written:
+			// Get the channel to be written:
 			errno = 0;
-			reg = strtoul(ptr, &end, 16);
+			chan = strtoul(ptr, &end, 16);
 			CHECK(errno, FLP_BAD_HEX);
 
 			// Ensure that it's 0-127
-			CHECK(reg > 127, FLP_REG_RANGE);
+			CHECK(chan > 127, FLP_CHAN_RANGE);
 			ptr = end;
 
 			// Only three valid chars at this point:
@@ -248,7 +248,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					FAIL(FLP_ILL_CHAR);
 				}
 			}
-			fStatus = flWriteRegister(handle, 32000, (uint8)reg, length, data, error);
+			fStatus = flWriteChannel(handle, 32000, (uint8)chan, length, data, error);
 			CHECK(fStatus, FLP_LIBERR);
 			free(data);
 			data = NULL;
