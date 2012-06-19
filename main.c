@@ -27,6 +27,8 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+#define TIMEOUT (10*60*1000)
+
 static const char *ptr;
 
 static bool isHexDigit(char ch) {
@@ -166,7 +168,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			if ( fileName ) {
 				uint32 bytesWritten;
 				data = malloc(length);
-				fStatus = flReadChannel(handle, 32000, (uint8)chan, length, data, error);
+				fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
 				CHECK(fStatus, FLP_LIBERR);
 				file = fopen(fileName, "wb");
 				CHECK(!file, FLP_CANNOT_SAVE);
@@ -182,7 +184,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				int oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK(bStatus, FLP_LIBERR);
-				fStatus = flReadChannel(handle, 32000, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+				fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 				CHECK(fStatus, FLP_LIBERR);
 			}
 			break;
@@ -248,7 +250,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					FAIL(FLP_ILL_CHAR);
 				}
 			}
-			fStatus = flWriteChannel(handle, 32000, (uint8)chan, length, data, error);
+			fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
 			CHECK(fStatus, FLP_LIBERR);
 			free(data);
 			data = NULL;
@@ -338,6 +340,8 @@ int main(int argc, char *argv[]) {
 
 	printf("Attempting to open connection to FPGALink device %s...\n", vp);
 	fStatus = flOpen(vp, &handle, NULL);
+	//fStatus = flOpen(vp, &handle, &error);
+	//flFreeError(error);
 	if ( fStatus ) {
 		if ( ivpOpt->count ) {
 			int count = 60;
