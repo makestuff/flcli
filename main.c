@@ -26,6 +26,11 @@
 #include <argtable2.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#ifdef WIN32
+#include <Windows.h>
+#else
+#include <sys/time.h>
+#endif
 
 #define TIMEOUT (10*60*1000)
 
@@ -108,6 +113,16 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 	uint8 *data = NULL;
 	char *fileName = NULL;
 	FILE *file = NULL;
+	double totalTime, speed;
+	#ifdef WIN32
+		LARGE_INTEGER tvStart, tvEnd, freq;
+		DWORD_PTR mask = 1;
+		SetThreadAffinityMask(GetCurrentThread(), mask);
+		QueryPerformanceFrequency(&freq);
+	#else
+		struct timeval tvStart, tvEnd;
+		long long startTime, endTime;
+	#endif
 	bStatus = bufInitialise(&dataFromFPGA, 1024, 0x00, error);
 	CHECK(bStatus, FLP_LIBERR);
 	ptr = line;
@@ -168,7 +183,28 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			if ( fileName ) {
 				uint32 bytesWritten;
 				data = malloc(length);
-				fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = endTime - startTime;
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				printf("Speed: %f MiB/s\n", speed);
 				CHECK(fStatus, FLP_LIBERR);
 				file = fopen(fileName, "wb");
 				CHECK(!file, FLP_CANNOT_SAVE);
@@ -184,7 +220,28 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				int oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK(bStatus, FLP_LIBERR);
-				fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = endTime - startTime;
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				printf("Speed: %f MiB/s\n", speed);
 				CHECK(fStatus, FLP_LIBERR);
 			}
 			break;
@@ -250,7 +307,28 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					FAIL(FLP_ILL_CHAR);
 				}
 			}
-			fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+			#ifdef WIN32
+				QueryPerformanceCounter(&tvStart);
+				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+				QueryPerformanceCounter(&tvEnd);
+				totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+				totalTime /= freq.QuadPart;
+				speed = (double)length / (1024*1024*totalTime);
+			#else
+				gettimeofday(&tvStart, NULL);
+				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+				gettimeofday(&tvEnd, NULL);
+				startTime = tvStart.tv_sec;
+				startTime *= 1000000;
+				startTime += tvStart.tv_usec;
+				endTime = tvEnd.tv_sec;
+				endTime *= 1000000;
+				endTime += tvEnd.tv_usec;
+				totalTime = endTime - startTime;
+				totalTime /= 1000000;  // convert from uS to S.
+				speed = (double)length / (1024*1024*totalTime);
+			#endif
+			printf("Speed: %f MiB/s\n", speed);
 			CHECK(fStatus, FLP_LIBERR);
 			free(data);
 			data = NULL;
@@ -382,7 +460,7 @@ int main(int argc, char *argv[]) {
 
 	if ( powOpt->count ) {
 		printf("Connecting USB power to FPGA...\n");
-		fStatus = flPortAccess(handle, 0x0080, 0x0080, NULL, &error);
+		fStatus = flPortAccess(handle, 3, 0x80, 0x80, 0x80, NULL, &error);  // set D7 output, high
 		CHECK(fStatus, FLP_LIBERR);
 
 		// 100ms delay to allow power to settle
