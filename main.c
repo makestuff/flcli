@@ -35,12 +35,21 @@
 #define TIMEOUT (10*60*1000)
 
 static const char *ptr;
+static bool enableBenchmarking = false;
 
 static bool isHexDigit(char ch) {
 	return
 		(ch >= '0' && ch <= '9') ||
 		(ch >= 'a' && ch <= 'f') ||
 		(ch >= 'A' && ch <= 'F');
+}
+
+static uint16 calcChecksum(const uint8 *data, uint32 length) {
+	uint16 cksum = 0x0000;
+	while ( length-- ) {
+		cksum += *data++;
+	}
+	return cksum;
 }
 
 static bool getHexNibble(char hexDigit, uint8 *nibble) {
@@ -204,7 +213,11 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					totalTime /= 1000000;  // convert from uS to S.
 					speed = (double)length / (1024*1024*totalTime);
 				#endif
-				printf("Speed: %f MiB/s\n", speed);
+				if ( enableBenchmarking ) {
+					printf(
+						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
+						length, calcChecksum(data, length), chan, speed);
+				}
 				CHECK(fStatus, FLP_LIBERR);
 				file = fopen(fileName, "wb");
 				CHECK(!file, FLP_CANNOT_SAVE);
@@ -241,7 +254,11 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					totalTime /= 1000000;  // convert from uS to S.
 					speed = (double)length / (1024*1024*totalTime);
 				#endif
-				printf("Speed: %f MiB/s\n", speed);
+				if ( enableBenchmarking ) {
+					printf(
+						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
+						length, calcChecksum(dataFromFPGA.data + oldLength, length), chan, speed);
+				}
 				CHECK(fStatus, FLP_LIBERR);
 			}
 			break;
@@ -328,7 +345,11 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				totalTime /= 1000000;  // convert from uS to S.
 				speed = (double)length / (1024*1024*totalTime);
 			#endif
-			printf("Speed: %f MiB/s\n", speed);
+			if ( enableBenchmarking ) {
+				printf(
+					"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
+					length, calcChecksum(data, length), chan, speed);
+			}
 			CHECK(fStatus, FLP_LIBERR);
 			free(data);
 			data = NULL;
@@ -372,9 +393,10 @@ int main(int argc, char *argv[]) {
 	struct arg_lit *scanOpt = arg_lit0("s", "scan", "                  scan the JTAG chain");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
 	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                  start up an interactive CommFPGA session");
+	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "            enable benchmarking & checksumming");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, jtagOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, jtagOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, benOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -497,6 +519,10 @@ int main(int argc, char *argv[]) {
 			errRender(&error, "XSVF/CSVF play requested but device at %s does not support NeroJTAG", vp);
 			FAIL(FLP_ARGS);
 		}
+	}
+
+	if ( benOpt->count ) {
+		enableBenchmarking = true;
 	}
 
 	if ( actOpt->count ) {
