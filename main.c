@@ -429,7 +429,8 @@ int main(int argc, char *argv[]) {
 		FAIL(FLP_ARGS);
 	}
 
-	flInitialise();
+	fStatus = flInitialise(0, &error);
+	CHECK(fStatus, FLP_LIBERR);
 
 	vp = vpOpt->sval[0];
 
