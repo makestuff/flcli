@@ -223,7 +223,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				CHECK(!file, FLP_CANNOT_SAVE);
 				free(fileName);
 				fileName = NULL;
-				bytesWritten = fwrite(data, 1, length, file);
+				bytesWritten = (uint32)fwrite(data, 1, length, file);
 				CHECK(bytesWritten != length, FLP_CANNOT_SAVE);
 				free(data);
 				data = NULL;
@@ -313,7 +313,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 						p++;
 					}
 					CHECK((p - ptr) & 1, FLP_ODD_DIGITS);
-					length = (p - ptr) / 2;
+					length = (uint32)(p - ptr) / 2;
 					data = malloc(length);
 					dataPtr = data;
 					for ( i = 0; i < length; i++ ) {
@@ -371,7 +371,7 @@ cleanup:
 	free(fileName);
 	free(data);
 	if ( returnCode > FLP_LIBERR ) {
-		const int column = ptr-line;
+		const int column = (int)(ptr - line);
 		int i;
 		fprintf(stderr, "%s at column %d\n  %s\n  ", errMessages[returnCode], column, line);
 		for ( i = 0; i < column; i++ ) {
