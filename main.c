@@ -171,13 +171,15 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				CHECK(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR);
 				if ( *ptr == ' ' ) {
 					const char *p;
-					ptr++;
-					CHECK(*ptr != '"', FLP_ILL_CHAR);
+					const char quoteChar = *++ptr;
+					CHECK(
+						(quoteChar != '"' && quoteChar != '\''),
+						FLP_ILL_CHAR);
 					
 					// Get the file to write bytes to:
 					ptr++;
 					p = ptr;
-					while ( *p != '"' && *p != '\0' ) {
+					while ( *p != quoteChar && *p != '\0' ) {
 						p++;
 					}
 					CHECK(*p == '\0', FLP_UNTERM_STRING);
@@ -283,13 +285,13 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 
 			if ( *ptr == ' ' ) {
 				const char *p;
-				ptr++;
+				const char quoteChar = *++ptr;
 
-				if ( *ptr == '"' ) {
+				if ( quoteChar == '"' || quoteChar == '\'' ) {
 					// Get the file to read bytes from:
 					ptr++;
 					p = ptr;
-					while ( *p != '"' && *p != '\0' ) {
+					while ( *p != quoteChar && *p != '\0' ) {
 						p++;
 					}
 					CHECK(*p == '\0', FLP_UNTERM_STRING);
