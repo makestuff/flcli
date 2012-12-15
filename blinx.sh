@@ -3,4 +3,4 @@
 #
 #!/bin/bash -x
 make deps
-make MACHINE=i686 deps
+make MACHINE=x86 deps
