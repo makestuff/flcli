@@ -388,8 +388,8 @@ int main(int argc, char *argv[]) {
 
 	ReturnCode returnCode = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "         vendor ID and product ID (e.g 04B4:8613)");
-	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          VID, PID and optional dev ID (e.g 1D50:602B:0001)");
 	struct arg_str *jtagOpt = arg_str0("j", "jtag", "<portSpec>", "       JTAG port config (e.g D0234)");
+	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          VID, PID and optional dev ID (e.g 1D50:602B:0001)");
 	struct arg_file *fileOpt = arg_file0("x", "xsvf", "<fileName>", "       SVF, XSVF or CSVF file to load");
 	struct arg_lit *powOpt = arg_lit0("p", "power", "                 FPGA is powered from USB (Nexys2 only!)");
 	struct arg_lit *scanOpt = arg_lit0("s", "scan", "                  scan the JTAG chain");
@@ -398,7 +398,7 @@ int main(int argc, char *argv[]) {
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "             enable benchmarking & checksumming");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, jtagOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, benOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, jtagOpt, vpOpt, fileOpt, powOpt, scanOpt, actOpt, cliOpt, benOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
