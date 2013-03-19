@@ -357,6 +357,16 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			data = NULL;
 			break;
 		}
+		case '+':
+			ptr++;
+			fStatus = flFifoMode(handle, true, error);
+			CHECK(fStatus, FLP_LIBERR);
+			break;
+		case '-':
+			ptr++;
+			fStatus = flFifoMode(handle, false, error);
+			CHECK(fStatus, FLP_LIBERR);
+			break;
 		default:
 			FAIL(FLP_ILL_CHAR);
 		}
@@ -388,17 +398,17 @@ int main(int argc, char *argv[]) {
 
 	ReturnCode returnCode = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "         vendor ID and product ID (e.g 04B4:8613)");
-	struct arg_str *jtagOpt = arg_str0("j", "jtag", "<portSpec>", "       JTAG port config (e.g D0234)");
-	struct arg_lit *queryOpt = arg_lit0("q", "query", "                 query the JTAG chain");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          VID, PID and optional dev ID (e.g 1D50:602B:0001)");
-	struct arg_file *fileOpt = arg_file0("x", "xsvf", "<fileName>", "       SVF, XSVF or CSVF file to load");
-	struct arg_lit *powOpt = arg_lit0("p", "power", "                 FPGA is powered from USB (Nexys2 only!)");
+	struct arg_str *digOpt = arg_str0("d", "digport", "<port[,port]*>", "configure digital ports");
+	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagPorts>", "     query the JTAG chain");
+	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "      programming configuration");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
 	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                  start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "             enable benchmarking & checksumming");
+	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                 reset the bulk endpoints");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, jtagOpt, queryOpt, vpOpt, fileOpt, powOpt, actOpt, cliOpt, benOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, digOpt, queryOpt, progOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -436,26 +446,15 @@ int main(int argc, char *argv[]) {
 
 	vp = vpOpt->sval[0];
 
-	if ( !ivpOpt->count && jtagOpt->count ) {
-		errRender(&error, "You can't specify --jtag without --ivp");
-		FAIL(FLP_ARGS);
-	}
-
 	printf("Attempting to open connection to FPGALink device %s...\n", vp);
 	fStatus = flOpen(vp, &handle, NULL);
-	//fStatus = flOpen(vp, &handle, &error);
-	//flFreeError(error);
 	if ( fStatus ) {
 		if ( ivpOpt->count ) {
 			int count = 60;
 			bool flag;
-			const char *jtagPort = "D0234";
-			if ( jtagOpt->count ) {
-				jtagPort = jtagOpt->sval[0];
-			}
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
-			fStatus = flLoadStandardFirmware(ivp, vp, jtagPort, &error);
+			fStatus = flLoadStandardFirmware(ivp, vp, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			
 			printf("Awaiting renumeration");
@@ -483,21 +482,24 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if ( powOpt->count ) {
-		printf("Connecting USB power to FPGA...\n");
-		fStatus = flPortAccess(handle, 3, 0x80, 0x80, 0x80, NULL, &error);  // set D7 output, high
+	if ( rstOpt->count ) {
+		// Reset the bulk endpoints (only needed in some virtualised environments)
+		fStatus = flResetToggle(handle, &error);
 		CHECK(fStatus, FLP_LIBERR);
-
-		// 100ms delay to allow power to settle
-		flSleep(100);
 	}
 
 	isNeroCapable = flIsNeroCapable(handle);
 	isCommCapable = flIsCommCapable(handle);
 
+	if ( digOpt->count ) {
+		fStatus = flPortConfig(handle, digOpt->sval[0], &error);
+		CHECK(fStatus, FLP_LIBERR);
+		flSleep(100);
+	}
+
 	if ( queryOpt->count ) {
 		if ( isNeroCapable ) {
-			fStatus = flScanChain(handle, &numDevices, scanChain, 16, &error);
+			fStatus = jtagScanChain(handle, queryOpt->sval[0], &numDevices, scanChain, 16, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			if ( numDevices ) {
 				printf("The FPGALink device at %s scanned its JTAG chain, yielding:\n", vp);
@@ -508,21 +510,24 @@ int main(int argc, char *argv[]) {
 				printf("The FPGALink device at %s scanned its JTAG chain but did not find any attached devices\n", vp);
 			}
 		} else {
-			errRender(&error, "JTAG chain scan requested but FPGALink device at %s does not support NeroJTAG", vp);
+			errRender(&error, "JTAG chain scan requested but FPGALink device at %s does not support NeroProg", vp);
 			FAIL(FLP_ARGS);
 		}
 	}
 
-	if ( fileOpt->count ) {
-		printf("Playing \"%s\" into the JTAG chain on FPGALink device %s...\n", fileOpt->filename[0], vp);
+	if ( progOpt->count ) {
+		printf("Programming device...\n");
 		if ( isNeroCapable ) {
-			fStatus = flPlayXSVF(handle, fileOpt->filename[0], &error);
+			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
 			CHECK(fStatus, FLP_LIBERR);
 		} else {
-			errRender(&error, "XSVF/CSVF play requested but device at %s does not support NeroJTAG", vp);
+			errRender(&error, "Program operation requested but device at %s does not support NeroProg", vp);
 			FAIL(FLP_ARGS);
 		}
 	}
+
+	fStatus = flFifoMode(handle, true, &error);
+	CHECK(fStatus, FLP_LIBERR);
 
 	if ( benOpt->count ) {
 		enableBenchmarking = true;
@@ -550,7 +555,7 @@ int main(int argc, char *argv[]) {
 	if ( cliOpt->count ) {
 		printf("\nEntering CommFPGA command-line mode:\n");
 		if ( isCommCapable ) {
-			bool isRunning;
+			bool isRunning = true;
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			if ( isRunning ) {
