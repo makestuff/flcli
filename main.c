@@ -399,7 +399,8 @@ int main(int argc, char *argv[]) {
 	ReturnCode returnCode = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "         vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          VID, PID and optional dev ID (e.g 1D50:602B:0001)");
-	struct arg_str *digOpt = arg_str0("d", "digport", "<port[,port]*>", "configure digital ports");
+	struct arg_str *pwOpt = arg_str0("w", "write", "<port[,port]*>", "  write/configure digital ports");
+	struct arg_lit *prOpt = arg_lit0("r", "read", "                  read digital ports");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagPorts>", "     query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "      programming configuration");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
@@ -408,7 +409,7 @@ int main(int argc, char *argv[]) {
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                 reset the bulk endpoints");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, digOpt, queryOpt, progOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, pwOpt, prOpt, queryOpt, progOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -491,10 +492,21 @@ int main(int argc, char *argv[]) {
 	isNeroCapable = flIsNeroCapable(handle);
 	isCommCapable = flIsCommCapable(handle);
 
-	if ( digOpt->count ) {
-		fStatus = flPortConfig(handle, digOpt->sval[0], &error);
+	if ( pwOpt->count ) {
+		fStatus = flPortConfig(handle, pwOpt->sval[0], &error);
 		CHECK(fStatus, FLP_LIBERR);
 		flSleep(100);
+	}
+
+	if ( prOpt->count ) {
+		uint8 portRead;
+		uint8 i;
+		printf("State of port lines:\n");
+		for ( i = 0; i < 5; i++ ) {
+			fStatus = flPortAccess(handle, i, 0x00, 0x00, 0x00, &portRead, &error);
+			CHECK(fStatus, FLP_LIBERR);
+			printf("  %c: 0x%02X\n", 'A' + i, portRead);
+		}
 	}
 
 	if ( queryOpt->count ) {
