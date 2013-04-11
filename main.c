@@ -402,7 +402,7 @@ int main(int argc, char *argv[]) {
 	struct arg_str *pwOpt = arg_str0("w", "write", "<port[,port]*>", "  write/configure digital ports");
 	struct arg_lit *prOpt = arg_lit0("r", "read", "                  read digital ports");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagPorts>", "     query the JTAG chain");
-	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "      programming configuration");
+	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "      program a device");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
 	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                  start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "             enable benchmarking & checksumming");
@@ -463,9 +463,9 @@ int main(int argc, char *argv[]) {
 			do {
 				printf(".");
 				fflush(stdout);
-				flSleep(100);
 				fStatus = flIsDeviceAvailable(vp, &flag, &error);
 				CHECK(fStatus, FLP_LIBERR);
+				flSleep(100);
 				count--;
 			} while ( !flag && count );
 			printf("\n");
@@ -493,6 +493,7 @@ int main(int argc, char *argv[]) {
 	isCommCapable = flIsCommCapable(handle);
 
 	if ( pwOpt->count ) {
+		printf("Configuring ports...\n");
 		fStatus = flPortConfig(handle, pwOpt->sval[0], &error);
 		CHECK(fStatus, FLP_LIBERR);
 		flSleep(100);
@@ -555,7 +556,7 @@ int main(int argc, char *argv[]) {
 				pStatus = parseLine(handle, actOpt->sval[0], &error);
 				CHECK(pStatus, pStatus);
 			} else {
-				errRender(&error, "The FPGALink device at %s is not ready to talk - did you forget --xsvf?", vp);
+				errRender(&error, "The FPGALink device at %s is not ready to talk - did you forget --program?", vp);
 				FAIL(FLP_ARGS);
 			}
 		} else {
