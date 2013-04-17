@@ -539,9 +539,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	fStatus = flFifoMode(handle, true, &error);
-	CHECK(fStatus, FLP_LIBERR);
-
 	if ( benOpt->count ) {
 		enableBenchmarking = true;
 	}
@@ -550,6 +547,8 @@ int main(int argc, char *argv[]) {
 		printf("Executing CommFPGA actions on FPGALink device %s...\n", vp);
 		if ( isCommCapable ) {
 			bool isRunning;
+			fStatus = flFifoMode(handle, true, &error);
+			CHECK(fStatus, FLP_LIBERR);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			if ( isRunning ) {
@@ -569,6 +568,8 @@ int main(int argc, char *argv[]) {
 		printf("\nEntering CommFPGA command-line mode:\n");
 		if ( isCommCapable ) {
 			bool isRunning = true;
+			fStatus = flFifoMode(handle, true, &error);
+			CHECK(fStatus, FLP_LIBERR);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			if ( isRunning ) {
