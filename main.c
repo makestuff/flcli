@@ -397,17 +397,17 @@ cleanup:
 int main(int argc, char *argv[]) {
 
 	ReturnCode returnCode = FLP_SUCCESS, pStatus;
-	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "         vendor ID and product ID (e.g 04B4:8613)");
-	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID>", "          VID, PID and optional dev ID (e.g 1D50:602B:0001)");
-	struct arg_str *pwOpt = arg_str0("w", "write", "<port[,port]*>", "  write/configure digital ports");
-	struct arg_lit *prOpt = arg_lit0("r", "read", "                  read digital ports");
-	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagPorts>", "     query the JTAG chain");
-	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "      program a device");
-	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", " a series of CommFPGA actions");
-	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                  start up an interactive CommFPGA session");
-	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "             enable benchmarking & checksumming");
-	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                 reset the bulk endpoints");
-	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                  print this help and exit\n");
+	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "            vendor ID and product ID (e.g 04B4:8613)");
+	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID[:DID]>", "       VID, PID and opt. dev ID (e.g 1D50:602B:0001)");
+	struct arg_str *pwOpt = arg_str0("w", "write", "<bitCfg[,bitCfg]*>", " write/configure ports (e.g B0+,B1-,B2?)");
+	struct arg_str *prOpt = arg_str0("r", "read", "<port[,port]*>", "      read ports (e.g B,C,D)");
+	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
+	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
+	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", "    a series of CommFPGA actions");
+	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                     start up an interactive CommFPGA session");
+	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "                enable benchmarking & checksumming");
+	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
+	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
 	void *argTable[] = {ivpOpt, vpOpt, pwOpt, prOpt, queryOpt, progOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
@@ -500,13 +500,31 @@ int main(int argc, char *argv[]) {
 	}
 
 	if ( prOpt->count ) {
+		const char *portStr = prOpt->sval[0];
+		uint8 portNum;
 		uint8 portRead;
-		uint8 i;
 		printf("State of port lines:\n");
-		for ( i = 0; i < 5; i++ ) {
-			fStatus = flPortAccess(handle, i, 0x00, 0x00, 0x00, &portRead, &error);
+		if ( *portStr == '\0' ) {
+			errRender(&error, "Empty port list");
+			FAIL(FLP_ARGS);
+		}
+		do {
+			portNum = *portStr++ & 0xDF; // uppercase
+			if ( portNum < 'A' || portNum > 'E' ) {
+				errRender(&error, "Invalid port identifier %c", portNum);
+				FAIL(FLP_ARGS);
+			}
+			printf("  %c: ", portNum);
+			fflush(stdout);
+			portNum -= 'A';
+			fStatus = flPortAccess(handle, portNum, 0x00, 0x00, 0x00, &portRead, &error);
 			CHECK(fStatus, FLP_LIBERR);
-			printf("  %c: 0x%02X\n", 'A' + i, portRead);
+			printf("0x%02X\n", portRead);
+			portNum = *portStr++;
+		} while ( portNum && portNum == ',' );
+		if ( portNum != '\0' ) {
+			errRender(&error, "Expected a comma, got %c", portNum);
+			FAIL(FLP_ARGS);
 		}
 	}
 
