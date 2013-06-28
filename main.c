@@ -99,6 +99,7 @@ typedef enum {
 	FLP_LIBERR,
 	FLP_BAD_HEX,
 	FLP_CHAN_RANGE,
+	FLP_CONDUIT_RANGE,
 	FLP_ILL_CHAR,
 	FLP_UNTERM_STRING,
 	FLP_NO_MEMORY,
@@ -357,16 +358,27 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			data = NULL;
 			break;
 		}
-		case '+':
+		case '+':{
+			uint32 conduit;
+			char *end;
 			ptr++;
-			fStatus = flFifoMode(handle, true, error);
+
+			// Get the conduit
+			errno = 0;
+			conduit = strtoul(ptr, &end, 16);
+			CHECK(errno, FLP_BAD_HEX);
+
+			// Ensure that it's 0-127
+			CHECK(conduit > 255, FLP_CONDUIT_RANGE);
+			ptr = end;
+
+			// Only two valid chars at this point:
+			CHECK(*ptr != '\0' && *ptr != ';', FLP_ILL_CHAR);
+
+			fStatus = flFifoMode(handle, (uint8)conduit, error);
 			CHECK(fStatus, FLP_LIBERR);
 			break;
-		case '-':
-			ptr++;
-			fStatus = flFifoMode(handle, false, error);
-			CHECK(fStatus, FLP_LIBERR);
-			break;
+		}
 		default:
 			FAIL(FLP_ILL_CHAR);
 		}
@@ -403,13 +415,14 @@ int main(int argc, char *argv[]) {
 	struct arg_str *prOpt = arg_str0("r", "read", "<port[,port]*>", "      read ports (e.g B,C,D)");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
+	struct arg_uint *fmOpt = arg_uint0("f", "fm", "<fifoMode>", "            which comm conduit to choose (default 0x01)");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", "    a series of CommFPGA actions");
 	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                     start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "                enable benchmarking & checksumming");
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, pwOpt, prOpt, queryOpt, progOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, pwOpt, prOpt, queryOpt, progOpt, fmOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -420,6 +433,7 @@ int main(int argc, char *argv[]) {
 	bool isNeroCapable, isCommCapable;
 	uint32 numDevices, scanChain[16], i;
 	const char *line = NULL;
+	uint8 fifoMode = 0x01;
 
 	if ( arg_nullcheck(argTable) != 0 ) {
 		errRender(&error, "%s: insufficient memory\n", progName);
@@ -530,6 +544,8 @@ int main(int argc, char *argv[]) {
 
 	if ( queryOpt->count ) {
 		if ( isNeroCapable ) {
+			fStatus = flFifoMode(handle, 0x00, &error);
+			CHECK(fStatus, FLP_LIBERR);
 			fStatus = jtagScanChain(handle, queryOpt->sval[0], &numDevices, scanChain, 16, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			if ( numDevices ) {
@@ -549,6 +565,8 @@ int main(int argc, char *argv[]) {
 	if ( progOpt->count ) {
 		printf("Programming device...\n");
 		if ( isNeroCapable ) {
+			fStatus = flFifoMode(handle, 0x00, &error);
+			CHECK(fStatus, FLP_LIBERR);
 			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
 			CHECK(fStatus, FLP_LIBERR);
 		} else {
@@ -560,12 +578,16 @@ int main(int argc, char *argv[]) {
 	if ( benOpt->count ) {
 		enableBenchmarking = true;
 	}
+	
+	if ( fmOpt->count ) {
+		fifoMode = (uint8)fmOpt->ival[0];
+	}
 
 	if ( actOpt->count ) {
 		printf("Executing CommFPGA actions on FPGALink device %s...\n", vp);
 		if ( isCommCapable ) {
 			bool isRunning;
-			fStatus = flFifoMode(handle, true, &error);
+			fStatus = flFifoMode(handle, fifoMode, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK(fStatus, FLP_LIBERR);
@@ -586,7 +608,7 @@ int main(int argc, char *argv[]) {
 		printf("\nEntering CommFPGA command-line mode:\n");
 		if ( isCommCapable ) {
 			bool isRunning = true;
-			fStatus = flFifoMode(handle, true, &error);
+			fStatus = flFifoMode(handle, fifoMode, &error);
 			CHECK(fStatus, FLP_LIBERR);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK(fStatus, FLP_LIBERR);
