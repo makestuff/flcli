@@ -47,20 +47,20 @@ static bool isHexDigit(char ch) {
 static uint16 calcChecksum(const uint8 *data, uint32 length) {
 	uint16 cksum = 0x0000;
 	while ( length-- ) {
-		cksum += *data++;
+		cksum = (uint16)(cksum + *data++);
 	}
 	return cksum;
 }
 
 static bool getHexNibble(char hexDigit, uint8 *nibble) {
 	if ( hexDigit >= '0' && hexDigit <= '9' ) {
-		*nibble = hexDigit - '0';
+		*nibble = (uint8)(hexDigit - '0');
 		return false;
 	} else if ( hexDigit >= 'a' && hexDigit <= 'f' ) {
-		*nibble = hexDigit - 'a' + 10;
+		*nibble = (uint8)(hexDigit - 'a' + 10);
 		return false;
 	} else if ( hexDigit >= 'A' && hexDigit <= 'F' ) {
-		*nibble = hexDigit - 'A' + 10;
+		*nibble = (uint8)(hexDigit - 'A' + 10);
 		return false;
 	} else {
 		return true;
@@ -71,7 +71,7 @@ static int getHexByte(uint8 *byte) {
 	uint8 upperNibble;
 	uint8 lowerNibble;
 	if ( !getHexNibble(ptr[0], &upperNibble) && !getHexNibble(ptr[1], &lowerNibble) ) {
-		*byte = (upperNibble << 4) | lowerNibble;
+		*byte = (uint8)((upperNibble << 4) | lowerNibble);
 		byte += 2;
 		return 0;
 	} else {
@@ -110,13 +110,8 @@ typedef enum {
 	FLP_ARGS
 } ReturnCode;
 
-#define CHECK(condition, retCode) \
-	if ( condition ) { \
-		FAIL(retCode); \
-	}
-
 static int parseLine(struct FLContext *handle, const char *line, const char **error) {
-	ReturnCode returnCode = FLP_SUCCESS;
+	ReturnCode retVal = FLP_SUCCESS;
 	FLStatus fStatus;
 	struct Buffer dataFromFPGA = {0,};
 	BufferStatus bStatus;
@@ -134,7 +129,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 		long long startTime, endTime;
 	#endif
 	bStatus = bufInitialise(&dataFromFPGA, 1024, 0x00, error);
-	CHECK(bStatus, FLP_LIBERR);
+	CHECK_STATUS(bStatus, FLP_LIBERR, cleanup);
 	ptr = line;
 	do {
 		while ( *ptr == ';' ) {
@@ -149,33 +144,33 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			
 			// Get the channel to be read:
 			errno = 0;
-			chan = strtoul(ptr, &end, 16);
-			CHECK(errno, FLP_BAD_HEX);
+			chan = (uint32)strtoul(ptr, &end, 16);
+			CHECK_STATUS(errno, FLP_BAD_HEX, cleanup);
 
 			// Ensure that it's 0-127
-			CHECK(chan > 127, FLP_CHAN_RANGE);
+			CHECK_STATUS(chan > 127, FLP_CHAN_RANGE, cleanup);
 			ptr = end;
 
 			// Only three valid chars at this point:
-			CHECK(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR);
+			CHECK_STATUS(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR, cleanup);
 
 			if ( *ptr == ' ' ) {
 				ptr++;
 
 				// Get the read count:
 				errno = 0;
-				length = strtoul(ptr, &end, 16);
-				CHECK(errno, FLP_BAD_HEX);
+				length = (uint32)strtoul(ptr, &end, 16);
+				CHECK_STATUS(errno, FLP_BAD_HEX, cleanup);
 				ptr = end;
 				
 				// Only three valid chars at this point:
-				CHECK(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR);
+				CHECK_STATUS(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR, cleanup);
 				if ( *ptr == ' ' ) {
 					const char *p;
 					const char quoteChar = *++ptr;
-					CHECK(
+					CHECK_STATUS(
 						(quoteChar != '"' && quoteChar != '\''),
-						FLP_ILL_CHAR);
+						FLP_ILL_CHAR, cleanup);
 					
 					// Get the file to write bytes to:
 					ptr++;
@@ -183,11 +178,11 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					while ( *p != quoteChar && *p != '\0' ) {
 						p++;
 					}
-					CHECK(*p == '\0', FLP_UNTERM_STRING);
-					fileName = malloc(p - ptr + 1);
-					CHECK(!fileName, FLP_NO_MEMORY);
-					CHECK(p - ptr == 0, FLP_EMPTY_STRING);
-					strncpy(fileName, ptr, p - ptr);
+					CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
+					fileName = malloc((size_t)(p - ptr + 1));
+					CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
+					CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
+					strncpy(fileName, ptr, (size_t)(p - ptr));
 					fileName[p - ptr] = '\0';
 					ptr = p + 1;
 				}
@@ -212,7 +207,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					endTime = tvEnd.tv_sec;
 					endTime *= 1000000;
 					endTime += tvEnd.tv_usec;
-					totalTime = endTime - startTime;
+					totalTime = (double)(endTime - startTime);
 					totalTime /= 1000000;  // convert from uS to S.
 					speed = (double)length / (1024*1024*totalTime);
 				#endif
@@ -221,21 +216,21 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
 						length, calcChecksum(data, length), chan, speed);
 				}
-				CHECK(fStatus, FLP_LIBERR);
+				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 				file = fopen(fileName, "wb");
-				CHECK(!file, FLP_CANNOT_SAVE);
+				CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
 				free(fileName);
 				fileName = NULL;
 				bytesWritten = (uint32)fwrite(data, 1, length, file);
-				CHECK(bytesWritten != length, FLP_CANNOT_SAVE);
+				CHECK_STATUS(bytesWritten != length, FLP_CANNOT_SAVE, cleanup);
 				free(data);
 				data = NULL;
 				fclose(file);
 				file = NULL;
 			} else {
-				int oldLength = dataFromFPGA.length;
+				uint32 oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
-				CHECK(bStatus, FLP_LIBERR);
+				CHECK_STATUS(bStatus, FLP_LIBERR, cleanup);
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
 					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
@@ -253,7 +248,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					endTime = tvEnd.tv_sec;
 					endTime *= 1000000;
 					endTime += tvEnd.tv_usec;
-					totalTime = endTime - startTime;
+					totalTime = (double)(endTime - startTime);
 					totalTime /= 1000000;  // convert from uS to S.
 					speed = (double)length / (1024*1024*totalTime);
 				#endif
@@ -262,7 +257,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
 						length, calcChecksum(dataFromFPGA.data + oldLength, length), chan, speed);
 				}
-				CHECK(fStatus, FLP_LIBERR);
+				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			}
 			break;
 		}
@@ -275,14 +270,14 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			// Get the channel to be written:
 			errno = 0;
 			chan = strtoul(ptr, &end, 16);
-			CHECK(errno, FLP_BAD_HEX);
+			CHECK_STATUS(errno, FLP_BAD_HEX, cleanup);
 
 			// Ensure that it's 0-127
-			CHECK(chan > 127, FLP_CHAN_RANGE);
+			CHECK_STATUS(chan > 127, FLP_CHAN_RANGE, cleanup);
 			ptr = end;
 
 			// Only three valid chars at this point:
-			CHECK(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR);
+			CHECK_STATUS(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR, cleanup);
 
 			if ( *ptr == ' ' ) {
 				const char *p;
@@ -295,18 +290,18 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					while ( *p != quoteChar && *p != '\0' ) {
 						p++;
 					}
-					CHECK(*p == '\0', FLP_UNTERM_STRING);
-					fileName = malloc(p - ptr + 1);
-					CHECK(!fileName, FLP_NO_MEMORY);
-					CHECK(p - ptr == 0, FLP_EMPTY_STRING);
-					strncpy(fileName, ptr, p - ptr);
+					CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
+					fileName = malloc((size_t)(p - ptr + 1));
+					CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
+					CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
+					strncpy(fileName, ptr, (size_t)(p - ptr));
 					fileName[p - ptr] = '\0';
 					
 					// Load data from the file:
 					data = flLoadFile(fileName, &length);
 					free(fileName);
 					fileName = NULL;
-					CHECK(!data, FLP_CANNOT_LOAD);
+					CHECK_STATUS(!data, FLP_CANNOT_LOAD, cleanup);
 					ptr = p + 1;
 				} else if ( isHexDigit(*ptr) ) {
 					// Read a sequence of hex bytes to write
@@ -315,7 +310,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					while ( isHexDigit(*p) ) {
 						p++;
 					}
-					CHECK((p - ptr) & 1, FLP_ODD_DIGITS);
+					CHECK_STATUS((p - ptr) & 1, FLP_ODD_DIGITS, cleanup);
 					length = (uint32)(p - ptr) / 2;
 					data = malloc(length);
 					dataPtr = data;
@@ -324,7 +319,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 						ptr += 2;
 					}
 				} else {
-					FAIL(FLP_ILL_CHAR);
+					FAIL(FLP_ILL_CHAR, cleanup);
 				}
 			}
 			#ifdef WIN32
@@ -344,7 +339,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				endTime = tvEnd.tv_sec;
 				endTime *= 1000000;
 				endTime += tvEnd.tv_usec;
-				totalTime = endTime - startTime;
+				totalTime = (double)(endTime - startTime);
 				totalTime /= 1000000;  // convert from uS to S.
 				speed = (double)length / (1024*1024*totalTime);
 			#endif
@@ -353,7 +348,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 					"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
 					length, calcChecksum(data, length), chan, speed);
 			}
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			free(data);
 			data = NULL;
 			break;
@@ -365,25 +360,25 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 
 			// Get the conduit
 			errno = 0;
-			conduit = strtoul(ptr, &end, 16);
-			CHECK(errno, FLP_BAD_HEX);
+			conduit = (uint32)strtoul(ptr, &end, 16);
+			CHECK_STATUS(errno, FLP_BAD_HEX, cleanup);
 
 			// Ensure that it's 0-127
-			CHECK(conduit > 255, FLP_CONDUIT_RANGE);
+			CHECK_STATUS(conduit > 255, FLP_CONDUIT_RANGE, cleanup);
 			ptr = end;
 
 			// Only two valid chars at this point:
-			CHECK(*ptr != '\0' && *ptr != ';', FLP_ILL_CHAR);
+			CHECK_STATUS(*ptr != '\0' && *ptr != ';', FLP_ILL_CHAR, cleanup);
 
 			fStatus = flFifoMode(handle, (uint8)conduit, error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			break;
 		}
 		default:
-			FAIL(FLP_ILL_CHAR);
+			FAIL(FLP_ILL_CHAR, cleanup);
 		}
 	} while ( *ptr == ';' );
-	CHECK(*ptr != '\0', FLP_ILL_CHAR);
+	CHECK_STATUS(*ptr != '\0', FLP_ILL_CHAR, cleanup);
 
 	dump(0x00000000, dataFromFPGA.data, dataFromFPGA.length);
 
@@ -394,21 +389,21 @@ cleanup:
 	}
 	free(fileName);
 	free(data);
-	if ( returnCode > FLP_LIBERR ) {
+	if ( retVal > FLP_LIBERR ) {
 		const int column = (int)(ptr - line);
 		int i;
-		fprintf(stderr, "%s at column %d\n  %s\n  ", errMessages[returnCode], column, line);
+		fprintf(stderr, "%s at column %d\n  %s\n  ", errMessages[retVal], column, line);
 		for ( i = 0; i < column; i++ ) {
 			fprintf(stderr, " ");
 		}
 		fprintf(stderr, "^\n");
 	}
-	return returnCode;
+	return retVal;
 }
 
 int main(int argc, char *argv[]) {
 
-	ReturnCode returnCode = FLP_SUCCESS, pStatus;
+	ReturnCode retVal = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "            vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID[:DID]>", "       VID, PID and opt. dev ID (e.g 1D50:602B:0001)");
 	struct arg_str *pwOpt = arg_str0("w", "write", "<bitCfg[,bitCfg]*>", " write/configure ports (e.g B0+,B1-,B2?)");
@@ -436,8 +431,8 @@ int main(int argc, char *argv[]) {
 	uint8 fifoMode = 0x01;
 
 	if ( arg_nullcheck(argTable) != 0 ) {
-		errRender(&error, "%s: insufficient memory\n", progName);
-		FAIL(1);
+		fprintf(stderr, "%s: insufficient memory\n", progName);
+		FAIL(1, cleanup);
 	}
 
 	numErrors = arg_parse(argc, argv, argTable);
@@ -447,17 +442,17 @@ int main(int argc, char *argv[]) {
 		arg_print_syntax(stdout, argTable, "\n");
 		printf("\nInteract with an FPGALink device.\n\n");
 		arg_print_glossary(stdout, argTable,"  %-10s %s\n");
-		FAIL(FLP_SUCCESS);
+		FAIL(FLP_SUCCESS, cleanup);
 	}
 
 	if ( numErrors > 0 ) {
 		arg_print_errors(stdout, endOpt, progName);
-		errRender(&error, "Try '%s --help' for more information.\n", progName);
-		FAIL(FLP_ARGS);
+		fprintf(stderr, "Try '%s --help' for more information.\n", progName);
+		FAIL(FLP_ARGS, cleanup);
 	}
 
 	fStatus = flInitialise(0, &error);
-	CHECK(fStatus, FLP_LIBERR);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 
 	vp = vpOpt->sval[0];
 
@@ -470,7 +465,7 @@ int main(int argc, char *argv[]) {
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
 			fStatus = flLoadStandardFirmware(ivp, vp, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			
 			printf("Awaiting renumeration");
 			flSleep(1000);
@@ -478,29 +473,29 @@ int main(int argc, char *argv[]) {
 				printf(".");
 				fflush(stdout);
 				fStatus = flIsDeviceAvailable(vp, &flag, &error);
-				CHECK(fStatus, FLP_LIBERR);
+				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 				flSleep(100);
 				count--;
 			} while ( !flag && count );
 			printf("\n");
 			if ( !flag ) {
-				errRender(&error, "FPGALink device did not renumerate properly as %s", vp);
-				FAIL(FLP_LIBERR);
+				fprintf(stderr, "FPGALink device did not renumerate properly as %s", vp);
+				FAIL(FLP_LIBERR, cleanup);
 			}
 
 			printf("Attempting to open connection to FPGLink device %s again...\n", vp);
 			fStatus = flOpen(vp, &handle, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 		} else {
-			errRender(&error, "Could not open FPGALink device at %s and no initial VID:PID was supplied", vp);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "Could not open FPGALink device at %s and no initial VID:PID was supplied", vp);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
 	if ( rstOpt->count ) {
 		// Reset the bulk endpoints (only needed in some virtualised environments)
 		fStatus = flResetToggle(handle, &error);
-		CHECK(fStatus, FLP_LIBERR);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 	}
 
 	isNeroCapable = flIsNeroCapable(handle);
@@ -509,7 +504,7 @@ int main(int argc, char *argv[]) {
 	if ( pwOpt->count ) {
 		printf("Configuring ports...\n");
 		fStatus = flPortConfig(handle, pwOpt->sval[0], &error);
-		CHECK(fStatus, FLP_LIBERR);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 		flSleep(100);
 	}
 
@@ -519,35 +514,35 @@ int main(int argc, char *argv[]) {
 		uint8 portRead;
 		printf("State of port lines:\n");
 		if ( *portStr == '\0' ) {
-			errRender(&error, "Empty port list");
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "Empty port list");
+			FAIL(FLP_ARGS, cleanup);
 		}
 		do {
-			portNum = *portStr++ & 0xDF; // uppercase
+			portNum = (uint8)(*portStr++ & 0xDF); // uppercase
 			if ( portNum < 'A' || portNum > 'E' ) {
-				errRender(&error, "Invalid port identifier %c", portNum);
-				FAIL(FLP_ARGS);
+				fprintf(stderr, "Invalid port identifier %c", portNum);
+				FAIL(FLP_ARGS, cleanup);
 			}
 			printf("  %c: ", portNum);
 			fflush(stdout);
-			portNum -= 'A';
+			portNum = (uint8)(portNum - 'A');
 			fStatus = flPortAccess(handle, portNum, 0x00, 0x00, 0x00, &portRead, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			printf("0x%02X\n", portRead);
-			portNum = *portStr++;
+			portNum = (uint8)*portStr++;
 		} while ( portNum && portNum == ',' );
 		if ( portNum != '\0' ) {
-			errRender(&error, "Expected a comma, got %c", portNum);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "Expected a comma, got %c", portNum);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
 	if ( queryOpt->count ) {
 		if ( isNeroCapable ) {
 			fStatus = flFifoMode(handle, 0x00, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = jtagScanChain(handle, queryOpt->sval[0], &numDevices, scanChain, 16, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			if ( numDevices ) {
 				printf("The FPGALink device at %s scanned its JTAG chain, yielding:\n", vp);
 				for ( i = 0; i < numDevices; i++ ) {
@@ -557,8 +552,8 @@ int main(int argc, char *argv[]) {
 				printf("The FPGALink device at %s scanned its JTAG chain but did not find any attached devices\n", vp);
 			}
 		} else {
-			errRender(&error, "JTAG chain scan requested but FPGALink device at %s does not support NeroProg", vp);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "JTAG chain scan requested but FPGALink device at %s does not support NeroProg", vp);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
@@ -566,12 +561,12 @@ int main(int argc, char *argv[]) {
 		printf("Programming device...\n");
 		if ( isNeroCapable ) {
 			fStatus = flFifoMode(handle, 0x00, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 		} else {
-			errRender(&error, "Program operation requested but device at %s does not support NeroProg", vp);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "Program operation requested but device at %s does not support NeroProg", vp);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
@@ -588,19 +583,19 @@ int main(int argc, char *argv[]) {
 		if ( isCommCapable ) {
 			bool isRunning;
 			fStatus = flFifoMode(handle, fifoMode, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			if ( isRunning ) {
 				pStatus = parseLine(handle, actOpt->sval[0], &error);
-				CHECK(pStatus, pStatus);
+				CHECK_STATUS(pStatus, pStatus, cleanup);
 			} else {
-				errRender(&error, "The FPGALink device at %s is not ready to talk - did you forget --program?", vp);
-				FAIL(FLP_ARGS);
+				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --program?", vp);
+				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			errRender(&error, "Action requested but device at %s does not support CommFPGA", vp);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "Action requested but device at %s does not support CommFPGA", vp);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
@@ -609,9 +604,9 @@ int main(int argc, char *argv[]) {
 		if ( isCommCapable ) {
 			bool isRunning = true;
 			fStatus = flFifoMode(handle, fifoMode, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
-			CHECK(fStatus, FLP_LIBERR);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			if ( isRunning ) {
 				do {
 					do {
@@ -620,17 +615,17 @@ int main(int argc, char *argv[]) {
 					if ( line && line[0] && line[0] != 'q' ) {
 						add_history(line);
 						pStatus = parseLine(handle, line, &error);
-						CHECK(pStatus, pStatus);
+						CHECK_STATUS(pStatus, pStatus, cleanup);
 						free((void*)line);
 					}
 				} while ( line && line[0] != 'q' );
 			} else {
-				errRender(&error, "The FPGALink device at %s is not ready to talk - did you forget --xsvf?", vp);
-				FAIL(FLP_ARGS);
+				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --xsvf?", vp);
+				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			errRender(&error, "CLI requested but device at %s does not support CommFPGA", vp);
-			FAIL(FLP_ARGS);
+			fprintf(stderr, "CLI requested but device at %s does not support CommFPGA", vp);
+			FAIL(FLP_ARGS, cleanup);
 		}
 	}
 
@@ -641,5 +636,5 @@ cleanup:
 		fprintf(stderr, "%s\n", error);
 		flFreeError(error);
 	}
-	return returnCode;
+	return retVal;
 }
