@@ -401,13 +401,39 @@ cleanup:
 	return retVal;
 }
 
-int main(int argc, char *argv[]) {
+static const char *nibbles[] = {
+	"0000",  // '0'
+	"0001",  // '1'
+	"0010",  // '2'
+	"0011",  // '3'
+	"0100",  // '4'
+	"0101",  // '5'
+	"0110",  // '6'
+	"0111",  // '7'
+	"1000",  // '8'
+	"1001",  // '9'
 
+	"XXXX",  // ':'
+	"XXXX",  // ';'
+	"XXXX",  // '<'
+	"XXXX",  // '='
+	"XXXX",  // '>'
+	"XXXX",  // '?'
+	"XXXX",  // '@'
+
+	"1010",  // 'A'
+	"1011",  // 'B'
+	"1100",  // 'C'
+	"1101",  // 'D'
+	"1110",  // 'E'
+	"1111"   // 'F'
+};
+
+int main(int argc, char *argv[]) {
 	ReturnCode retVal = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "            vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID[:DID]>", "       VID, PID and opt. dev ID (e.g 1D50:602B:0001)");
-	struct arg_str *pwOpt = arg_str0("w", "write", "<bitCfg[,bitCfg]*>", " write/configure ports (e.g B0+,B1-,B2?)");
-	struct arg_str *prOpt = arg_str0("r", "read", "<port[,port]*>", "      read ports (e.g B,C,D)");
+	struct arg_str *portOpt = arg_str0("d", "ports", "<bitCfg[,bitCfg]*>", " read/write digital ports (e.g B13+,C1-,B2?)");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
 	struct arg_uint *fmOpt = arg_uint0("f", "fm", "<fifoMode>", "            which comm conduit to choose (default 0x01)");
@@ -417,7 +443,7 @@ int main(int argc, char *argv[]) {
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, pwOpt, prOpt, queryOpt, progOpt, fmOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, portOpt, queryOpt, progOpt, fmOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -479,7 +505,7 @@ int main(int argc, char *argv[]) {
 			} while ( !flag && count );
 			printf("\n");
 			if ( !flag ) {
-				fprintf(stderr, "FPGALink device did not renumerate properly as %s", vp);
+				fprintf(stderr, "FPGALink device did not renumerate properly as %s\n", vp);
 				FAIL(FLP_LIBERR, cleanup);
 			}
 
@@ -487,7 +513,7 @@ int main(int argc, char *argv[]) {
 			fStatus = flOpen(vp, &handle, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 		} else {
-			fprintf(stderr, "Could not open FPGALink device at %s and no initial VID:PID was supplied", vp);
+			fprintf(stderr, "Could not open FPGALink device at %s and no initial VID:PID was supplied\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
@@ -501,40 +527,23 @@ int main(int argc, char *argv[]) {
 	isNeroCapable = flIsNeroCapable(handle);
 	isCommCapable = flIsCommCapable(handle);
 
-	if ( pwOpt->count ) {
+	if ( portOpt->count ) {
+		uint32 readState;
+		char hex[9];
+		const uint8 *p = (const uint8 *)hex;
 		printf("Configuring ports...\n");
-		fStatus = flPortConfig(handle, pwOpt->sval[0], &error);
+		fStatus = flMultiBitPortAccess(handle, portOpt->sval[0], &readState, &error);
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+		sprintf(hex, "%08X", readState);
+		printf("Readback:   28   24   20   16    12    8    4    0\n          %s", nibbles[*p++ - '0']);
+		printf(" %s", nibbles[*p++ - '0']);
+		printf(" %s", nibbles[*p++ - '0']);
+		printf(" %s", nibbles[*p++ - '0']);
+		printf("  %s", nibbles[*p++ - '0']);
+		printf(" %s", nibbles[*p++ - '0']);
+		printf(" %s", nibbles[*p++ - '0']);
+		printf(" %s\n", nibbles[*p++ - '0']);
 		flSleep(100);
-	}
-
-	if ( prOpt->count ) {
-		const char *portStr = prOpt->sval[0];
-		uint8 portNum;
-		uint8 portRead;
-		printf("State of port lines:\n");
-		if ( *portStr == '\0' ) {
-			fprintf(stderr, "Empty port list");
-			FAIL(FLP_ARGS, cleanup);
-		}
-		do {
-			portNum = (uint8)(*portStr++ & 0xDF); // uppercase
-			if ( portNum < 'A' || portNum > 'E' ) {
-				fprintf(stderr, "Invalid port identifier %c", portNum);
-				FAIL(FLP_ARGS, cleanup);
-			}
-			printf("  %c: ", portNum);
-			fflush(stdout);
-			portNum = (uint8)(portNum - 'A');
-			fStatus = flPortAccess(handle, portNum, 0x00, 0x00, 0x00, &portRead, &error);
-			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-			printf("0x%02X\n", portRead);
-			portNum = (uint8)*portStr++;
-		} while ( portNum && portNum == ',' );
-		if ( portNum != '\0' ) {
-			fprintf(stderr, "Expected a comma, got %c", portNum);
-			FAIL(FLP_ARGS, cleanup);
-		}
 	}
 
 	if ( queryOpt->count ) {
@@ -552,7 +561,7 @@ int main(int argc, char *argv[]) {
 				printf("The FPGALink device at %s scanned its JTAG chain but did not find any attached devices\n", vp);
 			}
 		} else {
-			fprintf(stderr, "JTAG chain scan requested but FPGALink device at %s does not support NeroProg", vp);
+			fprintf(stderr, "JTAG chain scan requested but FPGALink device at %s does not support NeroProg\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
@@ -565,7 +574,7 @@ int main(int argc, char *argv[]) {
 			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 		} else {
-			fprintf(stderr, "Program operation requested but device at %s does not support NeroProg", vp);
+			fprintf(stderr, "Program operation requested but device at %s does not support NeroProg\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
@@ -590,11 +599,11 @@ int main(int argc, char *argv[]) {
 				pStatus = parseLine(handle, actOpt->sval[0], &error);
 				CHECK_STATUS(pStatus, pStatus, cleanup);
 			} else {
-				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --program?", vp);
+				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --program?\n", vp);
 				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			fprintf(stderr, "Action requested but device at %s does not support CommFPGA", vp);
+			fprintf(stderr, "Action requested but device at %s does not support CommFPGA\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
@@ -620,11 +629,11 @@ int main(int argc, char *argv[]) {
 					}
 				} while ( line && line[0] != 'q' );
 			} else {
-				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --xsvf?", vp);
+				fprintf(stderr, "The FPGALink device at %s is not ready to talk - did you forget --xsvf?\n", vp);
 				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			fprintf(stderr, "CLI requested but device at %s does not support CommFPGA", vp);
+			fprintf(stderr, "CLI requested but device at %s does not support CommFPGA\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
