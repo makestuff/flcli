@@ -500,7 +500,7 @@ int main(int argc, char *argv[]) {
 				fflush(stdout);
 				fStatus = flIsDeviceAvailable(vp, &flag, &error);
 				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-				flSleep(100);
+				flSleep(250);
 				count--;
 			} while ( !flag && count );
 			printf("\n");
