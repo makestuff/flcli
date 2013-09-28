@@ -32,8 +32,6 @@
 #include <sys/time.h>
 #endif
 
-#define TIMEOUT (10*60*1000)
-
 static const char *ptr;
 static bool enableBenchmarking = false;
 
@@ -192,14 +190,14 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				data = malloc(length);
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, data, error);
 					QueryPerformanceCounter(&tvEnd);
 					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 					totalTime /= freq.QuadPart;
 					speed = (double)length / (1024*1024*totalTime);
 				#else
 					gettimeofday(&tvStart, NULL);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, data, error);
 					gettimeofday(&tvEnd, NULL);
 					startTime = tvStart.tv_sec;
 					startTime *= 1000000;
@@ -233,14 +231,14 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				CHECK_STATUS(bStatus, FLP_LIBERR, cleanup);
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 					QueryPerformanceCounter(&tvEnd);
 					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 					totalTime /= freq.QuadPart;
 					speed = (double)length / (1024*1024*totalTime);
 				#else
 					gettimeofday(&tvStart, NULL);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 					gettimeofday(&tvEnd, NULL);
 					startTime = tvStart.tv_sec;
 					startTime *= 1000000;
@@ -324,14 +322,14 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			}
 			#ifdef WIN32
 				QueryPerformanceCounter(&tvStart);
-				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+				fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
 				QueryPerformanceCounter(&tvEnd);
 				totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 				totalTime /= freq.QuadPart;
 				speed = (double)length / (1024*1024*totalTime);
 			#else
 				gettimeofday(&tvStart, NULL);
-				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+				fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
 				gettimeofday(&tvEnd, NULL);
 				startTime = tvStart.tv_sec;
 				startTime *= 1000000;
