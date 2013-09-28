@@ -368,7 +368,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			// Only two valid chars at this point:
 			CHECK_STATUS(*ptr != '\0' && *ptr != ';', FLP_ILL_CHAR, cleanup);
 
-			fStatus = flFifoMode(handle, (uint8)conduit, error);
+			fStatus = flSelectConduit(handle, (uint8)conduit, error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			break;
 		}
@@ -434,14 +434,14 @@ int main(int argc, char *argv[]) {
 	struct arg_str *portOpt = arg_str0("d", "ports", "<bitCfg[,bitCfg]*>", " read/write digital ports (e.g B13+,C1-,B2?)");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
-	struct arg_uint *fmOpt = arg_uint0("f", "fm", "<fifoMode>", "            which comm conduit to choose (default 0x01)");
+	struct arg_uint *conOpt = arg_uint0("c", "conduit", "<conduit>", "        which comm conduit to choose (default 0x01)");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", "    a series of CommFPGA actions");
-	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                     start up an interactive CommFPGA session");
+	struct arg_lit *shellOpt  = arg_lit0("s", "shell", "                    start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "                enable benchmarking & checksumming");
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
 	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, portOpt, queryOpt, progOpt, fmOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
+	void *argTable[] = {ivpOpt, vpOpt, portOpt, queryOpt, progOpt, conOpt, actOpt, shellOpt, benOpt, rstOpt, helpOpt, endOpt};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -452,7 +452,7 @@ int main(int argc, char *argv[]) {
 	bool isNeroCapable, isCommCapable;
 	uint32 numDevices, scanChain[16], i;
 	const char *line = NULL;
-	uint8 fifoMode = 0x01;
+	uint8 conduit = 0x01;
 
 	if ( arg_nullcheck(argTable) != 0 ) {
 		fprintf(stderr, "%s: insufficient memory\n", progName);
@@ -485,7 +485,7 @@ int main(int argc, char *argv[]) {
 	if ( fStatus ) {
 		if ( ivpOpt->count ) {
 			int count = 60;
-			bool flag;
+			uint8 flag;
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
 			fStatus = flLoadStandardFirmware(ivp, vp, &error);
@@ -522,8 +522,12 @@ int main(int argc, char *argv[]) {
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 	}
 
+	if ( conOpt->count ) {
+		conduit = (uint8)conOpt->ival[0];
+	}
+
 	isNeroCapable = flIsNeroCapable(handle);
-	isCommCapable = flIsCommCapable(handle);
+	isCommCapable = flIsCommCapable(handle, conduit);
 
 	if ( portOpt->count ) {
 		uint32 readState;
@@ -546,7 +550,7 @@ int main(int argc, char *argv[]) {
 
 	if ( queryOpt->count ) {
 		if ( isNeroCapable ) {
-			fStatus = flFifoMode(handle, 0x00, &error);
+			fStatus = flSelectConduit(handle, 0x00, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = jtagScanChain(handle, queryOpt->sval[0], &numDevices, scanChain, 16, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -567,7 +571,7 @@ int main(int argc, char *argv[]) {
 	if ( progOpt->count ) {
 		printf("Programming device...\n");
 		if ( isNeroCapable ) {
-			fStatus = flFifoMode(handle, 0x00, &error);
+			fStatus = flSelectConduit(handle, 0x00, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -581,15 +585,11 @@ int main(int argc, char *argv[]) {
 		enableBenchmarking = true;
 	}
 	
-	if ( fmOpt->count ) {
-		fifoMode = (uint8)fmOpt->ival[0];
-	}
-
 	if ( actOpt->count ) {
 		printf("Executing CommFPGA actions on FPGALink device %s...\n", vp);
 		if ( isCommCapable ) {
-			bool isRunning;
-			fStatus = flFifoMode(handle, fifoMode, &error);
+			uint8 isRunning;
+			fStatus = flSelectConduit(handle, conduit, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -606,11 +606,11 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if ( cliOpt->count ) {
+	if ( shellOpt->count ) {
 		printf("\nEntering CommFPGA command-line mode:\n");
 		if ( isCommCapable ) {
-			bool isRunning = true;
-			fStatus = flFifoMode(handle, fifoMode, &error);
+		   uint8 isRunning;
+			fStatus = flSelectConduit(handle, conduit, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -631,7 +631,7 @@ int main(int argc, char *argv[]) {
 				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			fprintf(stderr, "CLI requested but device at %s does not support CommFPGA\n", vp);
+			fprintf(stderr, "Shell requested but device at %s does not support CommFPGA\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
