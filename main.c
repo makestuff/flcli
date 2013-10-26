@@ -119,17 +119,17 @@ static ReturnCode doRead(
 	struct ReadReport readReport;
 	const uint8 *ptr;
 	uint16 csVal = 0x0000;
-	const uint32 CHUNK_MAX = 65536;
+	#define READ_MAX 65536
 
 	// Read first chunk
-	chunkSize = length >= CHUNK_MAX ? CHUNK_MAX : length;
+	chunkSize = length >= READ_MAX ? READ_MAX : length;
 	fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, error);
 	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
 	length = length - chunkSize;
 
 	while ( length ) {
 		// Read chunk N
-		chunkSize = length >= CHUNK_MAX ? CHUNK_MAX : length;
+		chunkSize = length >= READ_MAX ? READ_MAX : length;
 		fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, error);
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
 		length = length - chunkSize;
@@ -181,12 +181,12 @@ static ReturnCode doWrite(
 	const uint8 *ptr;
 	uint16 csVal = 0x0000;
 	uint32 lenVal = 0;
-	const uint32 CHUNK_MAX = 65536 - 5;
-	uint8 buffer[CHUNK_MAX];
+	#define WRITE_MAX (65536 - 5)
+	uint8 buffer[WRITE_MAX];
 
 	do {
 		// Read Nth chunk
-		bytesRead = (uint32)fread(buffer, 1, CHUNK_MAX, srcFile);
+		bytesRead = (uint32)fread(buffer, 1, WRITE_MAX, srcFile);
 		if ( bytesRead ) {
 			// Update running total
 			lenVal = lenVal + bytesRead;
@@ -202,7 +202,7 @@ static ReturnCode doWrite(
 				csVal = (uint16)(csVal + *ptr++);
 			}
 		}
-	} while ( bytesRead == CHUNK_MAX );
+	} while ( bytesRead == WRITE_MAX );
 
 	// Wait for writes to be received. This is optional, but it's only fair if we're benchmarking to
 	// actually wait for the work to be completed.
