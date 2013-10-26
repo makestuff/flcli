@@ -108,8 +108,116 @@ typedef enum {
 	FLP_ARGS
 } ReturnCode;
 
-static int parseLine(struct FLContext *handle, const char *line, const char **error) {
+static ReturnCode doRead(
+	struct FLContext *handle, uint8 chan, uint32 length, FILE *destFile, uint16 *checksum,
+	const char **error)
+{
 	ReturnCode retVal = FLP_SUCCESS;
+	uint32 bytesWritten;
+	FLStatus fStatus;
+	uint32 chunkSize;
+	struct ReadReport readReport;
+	const uint8 *ptr;
+	uint16 csVal = 0x0000;
+	const uint32 CHUNK_MAX = 65536;
+
+	// Read first chunk
+	chunkSize = length >= CHUNK_MAX ? CHUNK_MAX : length;
+	fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+	length = length - chunkSize;
+
+	while ( length ) {
+		// Read chunk N
+		chunkSize = length >= CHUNK_MAX ? CHUNK_MAX : length;
+		fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+		length = length - chunkSize;
+		
+		// Await chunk N-1
+		fStatus = flReadChannelAsyncAwait(handle, &readReport, error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+
+		// Write chunk N-1 to file
+		bytesWritten = (uint32)fwrite(readReport.data, 1, readReport.actualLength, destFile);
+		CHECK_STATUS(bytesWritten != readReport.actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+
+		// Checksum chunk N-1
+		chunkSize = readReport.actualLength;
+		ptr = readReport.data;
+		while ( chunkSize-- ) {
+			csVal = (uint16)(csVal + *ptr++);
+		}
+	}
+
+	// Await last chunk
+	fStatus = flReadChannelAsyncAwait(handle, &readReport, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+	
+	// Write last chunk to file
+	bytesWritten = (uint32)fwrite(readReport.data, 1, readReport.actualLength, destFile);
+	CHECK_STATUS(bytesWritten != readReport.actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+
+	// Checksum last chunk
+	chunkSize = readReport.actualLength;
+	ptr = readReport.data;
+	while ( chunkSize-- ) {
+		csVal = (uint16)(csVal + *ptr++);
+	}
+	
+	// Return checksum to caller
+	*checksum = csVal;
+cleanup:
+	return retVal;
+}
+
+static ReturnCode doWrite(
+	struct FLContext *handle, uint8 chan, FILE *srcFile, uint32 *length, uint16 *checksum,
+	const char **error)
+{
+	ReturnCode retVal = FLP_SUCCESS;
+	uint32 bytesRead, i;
+	FLStatus fStatus;
+	const uint8 *ptr;
+	uint16 csVal = 0x0000;
+	uint32 lenVal = 0;
+	const uint32 CHUNK_MAX = 65536 - 5;
+	uint8 buffer[CHUNK_MAX];
+
+	do {
+		// Read Nth chunk
+		bytesRead = (uint32)fread(buffer, 1, CHUNK_MAX, srcFile);
+		if ( bytesRead ) {
+			// Update running total
+			lenVal = lenVal + bytesRead;
+
+			// Submit Nth chunk
+			fStatus = flWriteChannelAsync(handle, chan, bytesRead, buffer, error);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doWrite()");
+
+			// Checksum Nth chunk
+			i = bytesRead;
+			ptr = buffer;
+			while ( i-- ) {
+				csVal = (uint16)(csVal + *ptr++);
+			}
+		}
+	} while ( bytesRead == CHUNK_MAX );
+
+	// Wait for writes to be received. This is optional, but it's only fair if we're benchmarking to
+	// actually wait for the work to be completed.
+	fStatus = flAwaitAsyncWrites(handle, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doWrite()");
+
+	// Return checksum & length to caller
+	*checksum = csVal;
+	*length = lenVal;
+cleanup:
+	return retVal;
+}
+
+static int parseLine(struct FLContext *handle, const char *line, const char **error) {
+	ReturnCode retVal = FLP_SUCCESS, status;
 	FLStatus fStatus;
 	struct Buffer dataFromFPGA = {0,};
 	BufferStatus bStatus;
@@ -186,18 +294,24 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				}
 			}
 			if ( fileName ) {
-				uint32 bytesWritten;
-				data = malloc(length);
+				uint16 checksum = 0x0000;
+
+				// Open file for writing
+				file = fopen(fileName, "wb");
+				CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
+				free(fileName);
+				fileName = NULL;
+
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
-					fStatus = flReadChannel(handle, (uint8)chan, length, data, error);
+					status = doRead(handle, (uint8)chan, length, file, &checksum, error);
 					QueryPerformanceCounter(&tvEnd);
 					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 					totalTime /= freq.QuadPart;
 					speed = (double)length / (1024*1024*totalTime);
 				#else
 					gettimeofday(&tvStart, NULL);
-					fStatus = flReadChannel(handle, (uint8)chan, length, data, error);
+					status = doRead(handle, (uint8)chan, length, file, &checksum, error);
 					gettimeofday(&tvEnd, NULL);
 					startTime = tvStart.tv_sec;
 					startTime *= 1000000;
@@ -212,17 +326,11 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				if ( enableBenchmarking ) {
 					printf(
 						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
-						length, calcChecksum(data, length), chan, speed);
+						length, checksum, chan, speed);
 				}
-				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-				file = fopen(fileName, "wb");
-				CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
-				free(fileName);
-				fileName = NULL;
-				bytesWritten = (uint32)fwrite(data, 1, length, file);
-				CHECK_STATUS(bytesWritten != length, FLP_CANNOT_SAVE, cleanup);
-				free(data);
-				data = NULL;
+				CHECK_STATUS(status, status, cleanup);
+
+				// Close the file
 				fclose(file);
 				file = NULL;
 			} else {
@@ -262,7 +370,8 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 		case 'w':{
 			unsigned long int chan;
 			uint32 length = 1, i;
-			char *end;
+			char *end, ch;
+			const char *p;
 			ptr++;
 			
 			// Get the channel to be written:
@@ -274,81 +383,112 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			CHECK_STATUS(chan > 127, FLP_CHAN_RANGE, cleanup);
 			ptr = end;
 
-			// Only three valid chars at this point:
-			CHECK_STATUS(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR, cleanup);
+			// There must be a space now:
+			CHECK_STATUS(*ptr != ' ', FLP_ILL_CHAR, cleanup);
 
-			if ( *ptr == ' ' ) {
-				const char *p;
-				const char quoteChar = *++ptr;
+			// Now either a quote or a hex digit
+		   ch = *++ptr;
+			if ( ch == '"' || ch == '\'' ) {
+				uint16 checksum = 0x0000;
 
-				if ( quoteChar == '"' || quoteChar == '\'' ) {
-					// Get the file to read bytes from:
-					ptr++;
-					p = ptr;
-					while ( *p != quoteChar && *p != '\0' ) {
-						p++;
-					}
-					CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
-					fileName = malloc((size_t)(p - ptr + 1));
-					CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
-					CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
-					strncpy(fileName, ptr, (size_t)(p - ptr));
-					fileName[p - ptr] = '\0';
-					
-					// Load data from the file:
-					data = flLoadFile(fileName, &length);
-					free(fileName);
-					fileName = NULL;
-					CHECK_STATUS(!data, FLP_CANNOT_LOAD, cleanup);
-					ptr = p + 1;
-				} else if ( isHexDigit(*ptr) ) {
-					// Read a sequence of hex bytes to write
-					uint8 *dataPtr;
-					p = ptr + 1;
-					while ( isHexDigit(*p) ) {
-						p++;
-					}
-					CHECK_STATUS((p - ptr) & 1, FLP_ODD_DIGITS, cleanup);
-					length = (uint32)(p - ptr) / 2;
-					data = malloc(length);
-					dataPtr = data;
-					for ( i = 0; i < length; i++ ) {
-						getHexByte(dataPtr++);
-						ptr += 2;
-					}
-				} else {
-					FAIL(FLP_ILL_CHAR, cleanup);
+				// Get the file to read bytes from:
+				ptr++;
+				p = ptr;
+				while ( *p != ch && *p != '\0' ) {
+					p++;
 				}
+				CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
+				fileName = malloc((size_t)(p - ptr + 1));
+				CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
+				CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
+				strncpy(fileName, ptr, (size_t)(p - ptr));
+				fileName[p - ptr] = '\0';
+				ptr = p + 1;  // skip over closing quote
+
+				// Open file for reading
+				file = fopen(fileName, "rb");
+				CHECK_STATUS(!file, FLP_CANNOT_LOAD, cleanup);
+				free(fileName);
+				fileName = NULL;
+				
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					status = doWrite(handle, (uint8)chan, file, &length, &checksum, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					status = doWrite(handle, (uint8)chan, file, &length, &checksum, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = (double)(endTime - startTime);
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				if ( enableBenchmarking ) {
+					printf(
+						"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
+						length, checksum, chan, speed);
+				}
+				CHECK_STATUS(status, status, cleanup);
+
+				// Close the file
+				fclose(file);
+				file = NULL;
+			} else if ( isHexDigit(ch) ) {
+				// Read a sequence of hex bytes to write
+				uint8 *dataPtr;
+				p = ptr + 1;
+				while ( isHexDigit(*p) ) {
+					p++;
+				}
+				CHECK_STATUS((p - ptr) & 1, FLP_ODD_DIGITS, cleanup);
+				length = (uint32)(p - ptr) / 2;
+				data = malloc(length);
+				dataPtr = data;
+				for ( i = 0; i < length; i++ ) {
+					getHexByte(dataPtr++);
+					ptr += 2;
+				}
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = (double)(endTime - startTime);
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				if ( enableBenchmarking ) {
+					printf(
+						"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
+						length, calcChecksum(data, length), chan, speed);
+				}
+				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+				free(data);
+				data = NULL;
+			} else {
+				FAIL(FLP_ILL_CHAR, cleanup);
 			}
-			#ifdef WIN32
-				QueryPerformanceCounter(&tvStart);
-				fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
-				QueryPerformanceCounter(&tvEnd);
-				totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
-				totalTime /= freq.QuadPart;
-				speed = (double)length / (1024*1024*totalTime);
-			#else
-				gettimeofday(&tvStart, NULL);
-				fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
-				gettimeofday(&tvEnd, NULL);
-				startTime = tvStart.tv_sec;
-				startTime *= 1000000;
-				startTime += tvStart.tv_usec;
-				endTime = tvEnd.tv_sec;
-				endTime *= 1000000;
-				endTime += tvEnd.tv_usec;
-				totalTime = (double)(endTime - startTime);
-				totalTime /= 1000000;  // convert from uS to S.
-				speed = (double)length / (1024*1024*totalTime);
-			#endif
-			if ( enableBenchmarking ) {
-				printf(
-					"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
-					length, calcChecksum(data, length), chan, speed);
-			}
-			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-			free(data);
-			data = NULL;
 			break;
 		}
 		case '+':{
