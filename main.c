@@ -656,6 +656,11 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	printf(
+		"Connected to FPGALink device %s (firmwareID: 0x%04X, firmwareVersion: 0x%08X)\n",
+		vp, flGetFirmwareID(handle), flGetFirmwareVersion(handle)
+	);
+
 	if ( rstOpt->count ) {
 		// Reset the bulk endpoints (only needed in some virtualised environments)
 		fStatus = flResetToggle(handle, &error);
