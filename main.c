@@ -1,5 +1,5 @@
 /* 
- * Copyright (C) 2012 Chris McClelland
+ * Copyright (C) 2012-2014 Chris McClelland
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -607,7 +607,7 @@ int main(int argc, char *argv[]) {
 	numErrors = arg_parse(argc, argv, argTable);
 
 	if ( helpOpt->count > 0 ) {
-		printf("FPGALink Command-Line Interface Copyright (C) 2012 Chris McClelland\n\nUsage: %s", progName);
+		printf("FPGALink Command-Line Interface Copyright (C) 2012-2014 Chris McClelland\n\nUsage: %s", progName);
 		arg_print_syntax(stdout, argTable, "\n");
 		printf("\nInteract with an FPGALink device.\n\n");
 		arg_print_glossary(stdout, argTable,"  %-10s %s\n");
