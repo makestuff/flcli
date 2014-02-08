@@ -338,7 +338,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				fclose(file);
 				file = NULL;
 			} else {
-				uint32 oldLength = dataFromFPGA.length;
+				size_t oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK_STATUS(bStatus, FLP_LIBERR, cleanup);
 				#ifdef WIN32
