@@ -575,6 +575,7 @@ int main(int argc, char *argv[]) {
 	ReturnCode retVal = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "            vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID[:DID]>", "       VID, PID and opt. dev ID (e.g 1D50:602B:0001)");
+	struct arg_str *fwOpt = arg_str0("f", "fw", "<firmware.hex>", "        firmware to RAM-load (or use std fw)");
 	struct arg_str *portOpt = arg_str0("d", "ports", "<bitCfg[,bitCfg]*>", " read/write digital ports (e.g B13+,C1-,B2?)");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
@@ -583,10 +584,15 @@ int main(int argc, char *argv[]) {
 	struct arg_lit *shellOpt  = arg_lit0("s", "shell", "                    start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "                enable benchmarking & checksumming");
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
-	struct arg_str *dumpOpt = arg_str0("l", "dumploop", "<ch:file>", "       write data from channel ch to file");
-	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
+	struct arg_str *dumpOpt = arg_str0("l", "dumploop", "<ch:file.bin>", "   write data from channel ch to file");
+	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit");
+	struct arg_str *eepromOpt  = arg_str0(NULL, "eeprom", "<std|fw.hex|fw.iic>", "   write firmware to FX2's EEPROM (!!)");
+	struct arg_str *backupOpt  = arg_str0(NULL, "backup", "<kbitSize:fw.iic>", "     backup FX2's EEPROM (e.g 128:fw.iic)\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, portOpt, queryOpt, progOpt, conOpt, actOpt, shellOpt, benOpt, rstOpt, dumpOpt, helpOpt, endOpt};
+	void *argTable[] = {
+		ivpOpt, vpOpt, fwOpt, portOpt, queryOpt, progOpt, conOpt, actOpt,
+		shellOpt, benOpt, rstOpt, dumpOpt, helpOpt, eepromOpt, backupOpt, endOpt
+	};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -633,7 +639,11 @@ int main(int argc, char *argv[]) {
 			uint8 flag;
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
-			fStatus = flLoadStandardFirmware(ivp, vp, &error);
+			if ( fwOpt->count ) {
+				fStatus = flLoadCustomFirmware(ivp, fwOpt->sval[0], &error);
+			} else {
+				fStatus = flLoadStandardFirmware(ivp, vp, &error);
+			}
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			
 			printf("Awaiting renumeration");
@@ -665,6 +675,30 @@ int main(int argc, char *argv[]) {
 		"Connected to FPGALink device %s (firmwareID: 0x%04X, firmwareVersion: 0x%08X)\n",
 		vp, flGetFirmwareID(handle), flGetFirmwareVersion(handle)
 	);
+
+	if ( eepromOpt->count ) {
+		if ( !strcmp("std", eepromOpt->sval[0]) ) {
+			printf("Writing the standard FPGALink firmware to the FX2's EEPROM...\n");
+			fStatus = flFlashStandardFirmware(handle, vp, &error);
+		} else {
+			printf("Writing custom FPGALink firmware from %s to the FX2's EEPROM...\n", eepromOpt->sval[0]);
+			fStatus = flFlashCustomFirmware(handle, eepromOpt->sval[0], &error);
+		}
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+	}
+
+	if ( backupOpt->count ) {
+		const char *fileName;
+		const uint32 kbitSize = strtoul(backupOpt->sval[0], (char**)&fileName, 0);
+		if ( *fileName != ':' ) {
+			fprintf(stderr, "%s: invalid argument to option --backup=<kbitSize:fw.iic>\n", progName);
+			FAIL(FLP_ARGS, cleanup);
+		}
+		fileName++;
+		printf("Saving a backup of %d kbit from the FX2's EEPROM to %s...\n", kbitSize, fileName);
+		fStatus = flSaveFirmware(handle, kbitSize, fileName, &error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+	}
 
 	if ( rstOpt->count ) {
 		// Reset the bulk endpoints (only needed in some virtualised environments)
@@ -761,7 +795,10 @@ int main(int argc, char *argv[]) {
 		unsigned long chan = strtoul(dumpOpt->sval[0], (char**)&fileName, 10);
 		FILE *file = NULL;
 		struct ReadReport readReport = {0,};
-		CHECK_STATUS(*fileName!=':', FLP_ARGS, cleanup);
+		if ( *fileName != ':' ) {
+			fprintf(stderr, "%s: invalid argument to option -l|--dumploop=<ch:file.bin>\n", progName);
+			FAIL(FLP_ARGS, cleanup);
+		}
 		fileName++;
 		printf("Copying from channel %lu to %s", chan, fileName);
 		file = fopen(fileName, "wb");
