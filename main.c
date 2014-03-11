@@ -120,7 +120,8 @@ static ReturnCode doRead(
 	uint32 bytesWritten;
 	FLStatus fStatus;
 	uint32 chunkSize;
-	struct ReadReport readReport;
+	const uint8 *recvData;
+	uint32 actualLength;
 	const uint8 *ptr;
 	uint16 csVal = 0x0000;
 	#define READ_MAX 65536
@@ -139,32 +140,32 @@ static ReturnCode doRead(
 		length = length - chunkSize;
 		
 		// Await chunk N-1
-		fStatus = flReadChannelAsyncAwait(handle, &readReport, error);
+		fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, error);
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
 
 		// Write chunk N-1 to file
-		bytesWritten = (uint32)fwrite(readReport.data, 1, readReport.actualLength, destFile);
-		CHECK_STATUS(bytesWritten != readReport.actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+		bytesWritten = (uint32)fwrite(recvData, 1, actualLength, destFile);
+		CHECK_STATUS(bytesWritten != actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
 
 		// Checksum chunk N-1
-		chunkSize = readReport.actualLength;
-		ptr = readReport.data;
+		chunkSize = actualLength;
+		ptr = recvData;
 		while ( chunkSize-- ) {
 			csVal = (uint16)(csVal + *ptr++);
 		}
 	}
 
 	// Await last chunk
-	fStatus = flReadChannelAsyncAwait(handle, &readReport, error);
+	fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, error);
 	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
 	
 	// Write last chunk to file
-	bytesWritten = (uint32)fwrite(readReport.data, 1, readReport.actualLength, destFile);
-	CHECK_STATUS(bytesWritten != readReport.actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+	bytesWritten = (uint32)fwrite(recvData, 1, actualLength, destFile);
+	CHECK_STATUS(bytesWritten != actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
 
 	// Checksum last chunk
-	chunkSize = readReport.actualLength;
-	ptr = readReport.data;
+	chunkSize = actualLength;
+	ptr = recvData;
 	while ( chunkSize-- ) {
 		csVal = (uint16)(csVal + *ptr++);
 	}
@@ -794,7 +795,8 @@ int main(int argc, char *argv[]) {
 		const char *fileName;
 		unsigned long chan = strtoul(dumpOpt->sval[0], (char**)&fileName, 10);
 		FILE *file = NULL;
-		struct ReadReport readReport = {0,};
+		const uint8 *recvData;
+		uint32 actualLength;
 		if ( *fileName != ':' ) {
 			fprintf(stderr, "%s: invalid argument to option -l|--dumploop=<ch:file.bin>\n", progName);
 			FAIL(FLP_ARGS, cleanup);
@@ -811,15 +813,15 @@ int main(int argc, char *argv[]) {
 		do {
 			fStatus = flReadChannelAsyncSubmit(handle, (uint8)chan, 22528, NULL, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-			fStatus = flReadChannelAsyncAwait(handle, &readReport, &error);
+			fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-			fwrite(readReport.data, 1, readReport.actualLength, file);
+			fwrite(recvData, 1, actualLength, file);
 			printf(".");
 		} while ( !sigIsRaised() );
 		printf("\nCaught SIGINT, quitting...\n");
-		fStatus = flReadChannelAsyncAwait(handle, &readReport, &error);
+		fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, &error);
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-		fwrite(readReport.data, 1, readReport.actualLength, file);
+		fwrite(recvData, 1, actualLength, file);
 		fclose(file);
 	}
 
