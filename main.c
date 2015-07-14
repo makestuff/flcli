@@ -1,5 +1,5 @@
 /* 
- * Copyright (C) 2012 Chris McClelland
+ * Copyright (C) 2012-2014 Chris McClelland
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +32,8 @@
 #include <sys/time.h>
 #endif
 
-#define TIMEOUT (10*60*1000)
+bool sigIsRaised(void);
+void sigRegisterHandler(void);
 
 static const char *ptr;
 static bool enableBenchmarking = false;
@@ -44,7 +45,7 @@ static bool isHexDigit(char ch) {
 		(ch >= 'A' && ch <= 'F');
 }
 
-static uint16 calcChecksum(const uint8 *data, uint32 length) {
+static uint16 calcChecksum(const uint8 *data, size_t length) {
 	uint16 cksum = 0x0000;
 	while ( length-- ) {
 		cksum = (uint16)(cksum + *data++);
@@ -84,6 +85,7 @@ static const char *const errMessages[] = {
 	NULL,
 	"Unparseable hex number",
 	"Channel out of range",
+	"Conduit out of range",
 	"Illegal character",
 	"Unterminated string",
 	"No memory",
@@ -110,8 +112,117 @@ typedef enum {
 	FLP_ARGS
 } ReturnCode;
 
-static int parseLine(struct FLContext *handle, const char *line, const char **error) {
+static ReturnCode doRead(
+	struct FLContext *handle, uint8 chan, uint32 length, FILE *destFile, uint16 *checksum,
+	const char **error)
+{
 	ReturnCode retVal = FLP_SUCCESS;
+	uint32 bytesWritten;
+	FLStatus fStatus;
+	uint32 chunkSize;
+	const uint8 *recvData;
+	uint32 actualLength;
+	const uint8 *ptr;
+	uint16 csVal = 0x0000;
+	#define READ_MAX 65536
+
+	// Read first chunk
+	chunkSize = length >= READ_MAX ? READ_MAX : length;
+	fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, NULL, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+	length = length - chunkSize;
+
+	while ( length ) {
+		// Read chunk N
+		chunkSize = length >= READ_MAX ? READ_MAX : length;
+		fStatus = flReadChannelAsyncSubmit(handle, chan, chunkSize, NULL, error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+		length = length - chunkSize;
+		
+		// Await chunk N-1
+		fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+
+		// Write chunk N-1 to file
+		bytesWritten = (uint32)fwrite(recvData, 1, actualLength, destFile);
+		CHECK_STATUS(bytesWritten != actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+
+		// Checksum chunk N-1
+		chunkSize = actualLength;
+		ptr = recvData;
+		while ( chunkSize-- ) {
+			csVal = (uint16)(csVal + *ptr++);
+		}
+	}
+
+	// Await last chunk
+	fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doRead()");
+	
+	// Write last chunk to file
+	bytesWritten = (uint32)fwrite(recvData, 1, actualLength, destFile);
+	CHECK_STATUS(bytesWritten != actualLength, FLP_CANNOT_SAVE, cleanup, "doRead()");
+
+	// Checksum last chunk
+	chunkSize = actualLength;
+	ptr = recvData;
+	while ( chunkSize-- ) {
+		csVal = (uint16)(csVal + *ptr++);
+	}
+	
+	// Return checksum to caller
+	*checksum = csVal;
+cleanup:
+	return retVal;
+}
+
+static ReturnCode doWrite(
+	struct FLContext *handle, uint8 chan, FILE *srcFile, size_t *length, uint16 *checksum,
+	const char **error)
+{
+	ReturnCode retVal = FLP_SUCCESS;
+	size_t bytesRead, i;
+	FLStatus fStatus;
+	const uint8 *ptr;
+	uint16 csVal = 0x0000;
+	size_t lenVal = 0;
+	#define WRITE_MAX (65536 - 5)
+	uint8 buffer[WRITE_MAX];
+
+	do {
+		// Read Nth chunk
+		bytesRead = fread(buffer, 1, WRITE_MAX, srcFile);
+		if ( bytesRead ) {
+			// Update running total
+			lenVal = lenVal + bytesRead;
+
+			// Submit Nth chunk
+			fStatus = flWriteChannelAsync(handle, chan, bytesRead, buffer, error);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doWrite()");
+
+			// Checksum Nth chunk
+			i = bytesRead;
+			ptr = buffer;
+			while ( i-- ) {
+				csVal = (uint16)(csVal + *ptr++);
+			}
+		}
+	} while ( bytesRead == WRITE_MAX );
+
+	// Wait for writes to be received. This is optional, but it's only fair if we're benchmarking to
+	// actually wait for the work to be completed.
+	fStatus = flAwaitAsyncWrites(handle, error);
+	CHECK_STATUS(fStatus, FLP_LIBERR, cleanup, "doWrite()");
+
+	// Return checksum & length to caller
+	*checksum = csVal;
+	*length = lenVal;
+cleanup:
+	return retVal;
+}
+
+static int parseLine(struct FLContext *handle, const char *line, const char **error) {
+	ReturnCode retVal = FLP_SUCCESS, status;
 	FLStatus fStatus;
 	struct Buffer dataFromFPGA = {0,};
 	BufferStatus bStatus;
@@ -188,18 +299,24 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				}
 			}
 			if ( fileName ) {
-				uint32 bytesWritten;
-				data = malloc(length);
+				uint16 checksum = 0x0000;
+
+				// Open file for writing
+				file = fopen(fileName, "wb");
+				CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
+				free(fileName);
+				fileName = NULL;
+
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					status = doRead(handle, (uint8)chan, length, file, &checksum, error);
 					QueryPerformanceCounter(&tvEnd);
 					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 					totalTime /= freq.QuadPart;
 					speed = (double)length / (1024*1024*totalTime);
 				#else
 					gettimeofday(&tvStart, NULL);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
+					status = doRead(handle, (uint8)chan, length, file, &checksum, error);
 					gettimeofday(&tvEnd, NULL);
 					startTime = tvStart.tv_sec;
 					startTime *= 1000000;
@@ -214,33 +331,27 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 				if ( enableBenchmarking ) {
 					printf(
 						"Read %d bytes (checksum 0x%04X) from channel %d at %f MiB/s\n",
-						length, calcChecksum(data, length), chan, speed);
+						length, checksum, chan, speed);
 				}
-				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-				file = fopen(fileName, "wb");
-				CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
-				free(fileName);
-				fileName = NULL;
-				bytesWritten = (uint32)fwrite(data, 1, length, file);
-				CHECK_STATUS(bytesWritten != length, FLP_CANNOT_SAVE, cleanup);
-				free(data);
-				data = NULL;
+				CHECK_STATUS(status, status, cleanup);
+
+				// Close the file
 				fclose(file);
 				file = NULL;
 			} else {
-				uint32 oldLength = dataFromFPGA.length;
+				size_t oldLength = dataFromFPGA.length;
 				bStatus = bufAppendConst(&dataFromFPGA, 0x00, length, error);
 				CHECK_STATUS(bStatus, FLP_LIBERR, cleanup);
 				#ifdef WIN32
 					QueryPerformanceCounter(&tvStart);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 					QueryPerformanceCounter(&tvEnd);
 					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
 					totalTime /= freq.QuadPart;
 					speed = (double)length / (1024*1024*totalTime);
 				#else
 					gettimeofday(&tvStart, NULL);
-					fStatus = flReadChannel(handle, TIMEOUT, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
+					fStatus = flReadChannel(handle, (uint8)chan, length, dataFromFPGA.data + oldLength, error);
 					gettimeofday(&tvEnd, NULL);
 					startTime = tvStart.tv_sec;
 					startTime *= 1000000;
@@ -263,8 +374,9 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 		}
 		case 'w':{
 			unsigned long int chan;
-			uint32 length = 1, i;
-			char *end;
+			size_t length = 1, i;
+			char *end, ch;
+			const char *p;
 			ptr++;
 			
 			// Get the channel to be written:
@@ -276,81 +388,112 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			CHECK_STATUS(chan > 127, FLP_CHAN_RANGE, cleanup);
 			ptr = end;
 
-			// Only three valid chars at this point:
-			CHECK_STATUS(*ptr != '\0' && *ptr != ';' && *ptr != ' ', FLP_ILL_CHAR, cleanup);
+			// There must be a space now:
+			CHECK_STATUS(*ptr != ' ', FLP_ILL_CHAR, cleanup);
 
-			if ( *ptr == ' ' ) {
-				const char *p;
-				const char quoteChar = *++ptr;
+			// Now either a quote or a hex digit
+		   ch = *++ptr;
+			if ( ch == '"' || ch == '\'' ) {
+				uint16 checksum = 0x0000;
 
-				if ( quoteChar == '"' || quoteChar == '\'' ) {
-					// Get the file to read bytes from:
-					ptr++;
-					p = ptr;
-					while ( *p != quoteChar && *p != '\0' ) {
-						p++;
-					}
-					CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
-					fileName = malloc((size_t)(p - ptr + 1));
-					CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
-					CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
-					strncpy(fileName, ptr, (size_t)(p - ptr));
-					fileName[p - ptr] = '\0';
-					
-					// Load data from the file:
-					data = flLoadFile(fileName, &length);
-					free(fileName);
-					fileName = NULL;
-					CHECK_STATUS(!data, FLP_CANNOT_LOAD, cleanup);
-					ptr = p + 1;
-				} else if ( isHexDigit(*ptr) ) {
-					// Read a sequence of hex bytes to write
-					uint8 *dataPtr;
-					p = ptr + 1;
-					while ( isHexDigit(*p) ) {
-						p++;
-					}
-					CHECK_STATUS((p - ptr) & 1, FLP_ODD_DIGITS, cleanup);
-					length = (uint32)(p - ptr) / 2;
-					data = malloc(length);
-					dataPtr = data;
-					for ( i = 0; i < length; i++ ) {
-						getHexByte(dataPtr++);
-						ptr += 2;
-					}
-				} else {
-					FAIL(FLP_ILL_CHAR, cleanup);
+				// Get the file to read bytes from:
+				ptr++;
+				p = ptr;
+				while ( *p != ch && *p != '\0' ) {
+					p++;
 				}
+				CHECK_STATUS(*p == '\0', FLP_UNTERM_STRING, cleanup);
+				fileName = malloc((size_t)(p - ptr + 1));
+				CHECK_STATUS(!fileName, FLP_NO_MEMORY, cleanup);
+				CHECK_STATUS(p - ptr == 0, FLP_EMPTY_STRING, cleanup);
+				strncpy(fileName, ptr, (size_t)(p - ptr));
+				fileName[p - ptr] = '\0';
+				ptr = p + 1;  // skip over closing quote
+
+				// Open file for reading
+				file = fopen(fileName, "rb");
+				CHECK_STATUS(!file, FLP_CANNOT_LOAD, cleanup);
+				free(fileName);
+				fileName = NULL;
+				
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					status = doWrite(handle, (uint8)chan, file, &length, &checksum, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					status = doWrite(handle, (uint8)chan, file, &length, &checksum, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = (double)(endTime - startTime);
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				if ( enableBenchmarking ) {
+					printf(
+						"Wrote "PFSZD" bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
+						length, checksum, chan, speed);
+				}
+				CHECK_STATUS(status, status, cleanup);
+
+				// Close the file
+				fclose(file);
+				file = NULL;
+			} else if ( isHexDigit(ch) ) {
+				// Read a sequence of hex bytes to write
+				uint8 *dataPtr;
+				p = ptr + 1;
+				while ( isHexDigit(*p) ) {
+					p++;
+				}
+				CHECK_STATUS((p - ptr) & 1, FLP_ODD_DIGITS, cleanup);
+				length = (size_t)(p - ptr) / 2;
+				data = malloc(length);
+				dataPtr = data;
+				for ( i = 0; i < length; i++ ) {
+					getHexByte(dataPtr++);
+					ptr += 2;
+				}
+				#ifdef WIN32
+					QueryPerformanceCounter(&tvStart);
+					fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
+					QueryPerformanceCounter(&tvEnd);
+					totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
+					totalTime /= freq.QuadPart;
+					speed = (double)length / (1024*1024*totalTime);
+				#else
+					gettimeofday(&tvStart, NULL);
+					fStatus = flWriteChannel(handle, (uint8)chan, length, data, error);
+					gettimeofday(&tvEnd, NULL);
+					startTime = tvStart.tv_sec;
+					startTime *= 1000000;
+					startTime += tvStart.tv_usec;
+					endTime = tvEnd.tv_sec;
+					endTime *= 1000000;
+					endTime += tvEnd.tv_usec;
+					totalTime = (double)(endTime - startTime);
+					totalTime /= 1000000;  // convert from uS to S.
+					speed = (double)length / (1024*1024*totalTime);
+				#endif
+				if ( enableBenchmarking ) {
+					printf(
+						"Wrote "PFSZD" bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
+						length, calcChecksum(data, length), chan, speed);
+				}
+				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+				free(data);
+				data = NULL;
+			} else {
+				FAIL(FLP_ILL_CHAR, cleanup);
 			}
-			#ifdef WIN32
-				QueryPerformanceCounter(&tvStart);
-				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
-				QueryPerformanceCounter(&tvEnd);
-				totalTime = (double)(tvEnd.QuadPart - tvStart.QuadPart);
-				totalTime /= freq.QuadPart;
-				speed = (double)length / (1024*1024*totalTime);
-			#else
-				gettimeofday(&tvStart, NULL);
-				fStatus = flWriteChannel(handle, TIMEOUT, (uint8)chan, length, data, error);
-				gettimeofday(&tvEnd, NULL);
-				startTime = tvStart.tv_sec;
-				startTime *= 1000000;
-				startTime += tvStart.tv_usec;
-				endTime = tvEnd.tv_sec;
-				endTime *= 1000000;
-				endTime += tvEnd.tv_usec;
-				totalTime = (double)(endTime - startTime);
-				totalTime /= 1000000;  // convert from uS to S.
-				speed = (double)length / (1024*1024*totalTime);
-			#endif
-			if ( enableBenchmarking ) {
-				printf(
-					"Wrote %d bytes (checksum 0x%04X) to channel %lu at %f MiB/s\n",
-					length, calcChecksum(data, length), chan, speed);
-			}
-			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-			free(data);
-			data = NULL;
 			break;
 		}
 		case '+':{
@@ -370,7 +513,7 @@ static int parseLine(struct FLContext *handle, const char *line, const char **er
 			// Only two valid chars at this point:
 			CHECK_STATUS(*ptr != '\0' && *ptr != ';', FLP_ILL_CHAR, cleanup);
 
-			fStatus = flFifoMode(handle, (uint8)conduit, error);
+			fStatus = flSelectConduit(handle, (uint8)conduit, error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			break;
 		}
@@ -433,17 +576,24 @@ int main(int argc, char *argv[]) {
 	ReturnCode retVal = FLP_SUCCESS, pStatus;
 	struct arg_str *ivpOpt = arg_str0("i", "ivp", "<VID:PID>", "            vendor ID and product ID (e.g 04B4:8613)");
 	struct arg_str *vpOpt = arg_str1("v", "vp", "<VID:PID[:DID]>", "       VID, PID and opt. dev ID (e.g 1D50:602B:0001)");
+	struct arg_str *fwOpt = arg_str0("f", "fw", "<firmware.hex>", "        firmware to RAM-load (or use std fw)");
 	struct arg_str *portOpt = arg_str0("d", "ports", "<bitCfg[,bitCfg]*>", " read/write digital ports (e.g B13+,C1-,B2?)");
 	struct arg_str *queryOpt = arg_str0("q", "query", "<jtagBits>", "         query the JTAG chain");
 	struct arg_str *progOpt = arg_str0("p", "program", "<config>", "         program a device");
-	struct arg_uint *fmOpt = arg_uint0("f", "fm", "<fifoMode>", "            which comm conduit to choose (default 0x01)");
+	struct arg_uint *conOpt = arg_uint0("c", "conduit", "<conduit>", "        which comm conduit to choose (default 0x01)");
 	struct arg_str *actOpt = arg_str0("a", "action", "<actionString>", "    a series of CommFPGA actions");
-	struct arg_lit *cliOpt  = arg_lit0("c", "cli", "                     start up an interactive CommFPGA session");
+	struct arg_lit *shellOpt  = arg_lit0("s", "shell", "                    start up an interactive CommFPGA session");
 	struct arg_lit *benOpt  = arg_lit0("b", "benchmark", "                enable benchmarking & checksumming");
 	struct arg_lit *rstOpt  = arg_lit0("r", "reset", "                    reset the bulk endpoints");
-	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit\n");
+	struct arg_str *dumpOpt = arg_str0("l", "dumploop", "<ch:file.bin>", "   write data from channel ch to file");
+	struct arg_lit *helpOpt  = arg_lit0("h", "help", "                     print this help and exit");
+	struct arg_str *eepromOpt  = arg_str0(NULL, "eeprom", "<std|fw.hex|fw.iic>", "   write firmware to FX2's EEPROM (!!)");
+	struct arg_str *backupOpt  = arg_str0(NULL, "backup", "<kbitSize:fw.iic>", "     backup FX2's EEPROM (e.g 128:fw.iic)\n");
 	struct arg_end *endOpt   = arg_end(20);
-	void *argTable[] = {ivpOpt, vpOpt, portOpt, queryOpt, progOpt, fmOpt, actOpt, cliOpt, benOpt, rstOpt, helpOpt, endOpt};
+	void *argTable[] = {
+		ivpOpt, vpOpt, fwOpt, portOpt, queryOpt, progOpt, conOpt, actOpt,
+		shellOpt, benOpt, rstOpt, dumpOpt, helpOpt, eepromOpt, backupOpt, endOpt
+	};
 	const char *progName = "flcli";
 	int numErrors;
 	struct FLContext *handle = NULL;
@@ -454,7 +604,7 @@ int main(int argc, char *argv[]) {
 	bool isNeroCapable, isCommCapable;
 	uint32 numDevices, scanChain[16], i;
 	const char *line = NULL;
-	uint8 fifoMode = 0x01;
+	uint8 conduit = 0x01;
 
 	if ( arg_nullcheck(argTable) != 0 ) {
 		fprintf(stderr, "%s: insufficient memory\n", progName);
@@ -464,7 +614,7 @@ int main(int argc, char *argv[]) {
 	numErrors = arg_parse(argc, argv, argTable);
 
 	if ( helpOpt->count > 0 ) {
-		printf("FPGALink Command-Line Interface Copyright (C) 2012 Chris McClelland\n\nUsage: %s", progName);
+		printf("FPGALink Command-Line Interface Copyright (C) 2012-2014 Chris McClelland\n\nUsage: %s", progName);
 		arg_print_syntax(stdout, argTable, "\n");
 		printf("\nInteract with an FPGALink device.\n\n");
 		arg_print_glossary(stdout, argTable,"  %-10s %s\n");
@@ -487,10 +637,14 @@ int main(int argc, char *argv[]) {
 	if ( fStatus ) {
 		if ( ivpOpt->count ) {
 			int count = 60;
-			bool flag;
+			uint8 flag;
 			ivp = ivpOpt->sval[0];
 			printf("Loading firmware into %s...\n", ivp);
-			fStatus = flLoadStandardFirmware(ivp, vp, &error);
+			if ( fwOpt->count ) {
+				fStatus = flLoadCustomFirmware(ivp, fwOpt->sval[0], &error);
+			} else {
+				fStatus = flLoadStandardFirmware(ivp, vp, &error);
+			}
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			
 			printf("Awaiting renumeration");
@@ -500,7 +654,7 @@ int main(int argc, char *argv[]) {
 				fflush(stdout);
 				fStatus = flIsDeviceAvailable(vp, &flag, &error);
 				CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
-				flSleep(100);
+				flSleep(250);
 				count--;
 			} while ( !flag && count );
 			printf("\n");
@@ -518,14 +672,47 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	printf(
+		"Connected to FPGALink device %s (firmwareID: 0x%04X, firmwareVersion: 0x%08X)\n",
+		vp, flGetFirmwareID(handle), flGetFirmwareVersion(handle)
+	);
+
+	if ( eepromOpt->count ) {
+		if ( !strcmp("std", eepromOpt->sval[0]) ) {
+			printf("Writing the standard FPGALink firmware to the FX2's EEPROM...\n");
+			fStatus = flFlashStandardFirmware(handle, vp, &error);
+		} else {
+			printf("Writing custom FPGALink firmware from %s to the FX2's EEPROM...\n", eepromOpt->sval[0]);
+			fStatus = flFlashCustomFirmware(handle, eepromOpt->sval[0], &error);
+		}
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+	}
+
+	if ( backupOpt->count ) {
+		const char *fileName;
+		const uint32 kbitSize = strtoul(backupOpt->sval[0], (char**)&fileName, 0);
+		if ( *fileName != ':' ) {
+			fprintf(stderr, "%s: invalid argument to option --backup=<kbitSize:fw.iic>\n", progName);
+			FAIL(FLP_ARGS, cleanup);
+		}
+		fileName++;
+		printf("Saving a backup of %d kbit from the FX2's EEPROM to %s...\n", kbitSize, fileName);
+		fStatus = flSaveFirmware(handle, kbitSize, fileName, &error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+	}
+
 	if ( rstOpt->count ) {
 		// Reset the bulk endpoints (only needed in some virtualised environments)
 		fStatus = flResetToggle(handle, &error);
 		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 	}
 
+	if ( conOpt->count ) {
+		conduit = (uint8)conOpt->ival[0];
+	}
+
 	isNeroCapable = flIsNeroCapable(handle);
-	isCommCapable = flIsCommCapable(handle);
+	isCommCapable = flIsCommCapable(handle, conduit);
 
 	if ( portOpt->count ) {
 		uint32 readState;
@@ -548,7 +735,7 @@ int main(int argc, char *argv[]) {
 
 	if ( queryOpt->count ) {
 		if ( isNeroCapable ) {
-			fStatus = flFifoMode(handle, 0x00, &error);
+			fStatus = flSelectConduit(handle, 0x00, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = jtagScanChain(handle, queryOpt->sval[0], &numDevices, scanChain, 16, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -569,7 +756,7 @@ int main(int argc, char *argv[]) {
 	if ( progOpt->count ) {
 		printf("Programming device...\n");
 		if ( isNeroCapable ) {
-			fStatus = flFifoMode(handle, 0x00, &error);
+			fStatus = flSelectConduit(handle, 0x00, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flProgram(handle, progOpt->sval[0], NULL, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -583,15 +770,11 @@ int main(int argc, char *argv[]) {
 		enableBenchmarking = true;
 	}
 	
-	if ( fmOpt->count ) {
-		fifoMode = (uint8)fmOpt->ival[0];
-	}
-
 	if ( actOpt->count ) {
 		printf("Executing CommFPGA actions on FPGALink device %s...\n", vp);
 		if ( isCommCapable ) {
-			bool isRunning;
-			fStatus = flFifoMode(handle, fifoMode, &error);
+			uint8 isRunning;
+			fStatus = flSelectConduit(handle, conduit, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -608,11 +791,45 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if ( cliOpt->count ) {
+	if ( dumpOpt->count ) {
+		const char *fileName;
+		unsigned long chan = strtoul(dumpOpt->sval[0], (char**)&fileName, 10);
+		FILE *file = NULL;
+		const uint8 *recvData;
+		uint32 actualLength;
+		if ( *fileName != ':' ) {
+			fprintf(stderr, "%s: invalid argument to option -l|--dumploop=<ch:file.bin>\n", progName);
+			FAIL(FLP_ARGS, cleanup);
+		}
+		fileName++;
+		printf("Copying from channel %lu to %s", chan, fileName);
+		file = fopen(fileName, "wb");
+		CHECK_STATUS(!file, FLP_CANNOT_SAVE, cleanup);
+		sigRegisterHandler();
+		fStatus = flSelectConduit(handle, conduit, &error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+		fStatus = flReadChannelAsyncSubmit(handle, (uint8)chan, 22528, NULL, &error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+		do {
+			fStatus = flReadChannelAsyncSubmit(handle, (uint8)chan, 22528, NULL, &error);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+			fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, &error);
+			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+			fwrite(recvData, 1, actualLength, file);
+			printf(".");
+		} while ( !sigIsRaised() );
+		printf("\nCaught SIGINT, quitting...\n");
+		fStatus = flReadChannelAsyncAwait(handle, &recvData, &actualLength, &actualLength, &error);
+		CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
+		fwrite(recvData, 1, actualLength, file);
+		fclose(file);
+	}
+
+	if ( shellOpt->count ) {
 		printf("\nEntering CommFPGA command-line mode:\n");
 		if ( isCommCapable ) {
-			bool isRunning = true;
-			fStatus = flFifoMode(handle, fifoMode, &error);
+		   uint8 isRunning;
+			fStatus = flSelectConduit(handle, conduit, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
 			fStatus = flIsFPGARunning(handle, &isRunning, &error);
 			CHECK_STATUS(fStatus, FLP_LIBERR, cleanup);
@@ -633,7 +850,7 @@ int main(int argc, char *argv[]) {
 				FAIL(FLP_ARGS, cleanup);
 			}
 		} else {
-			fprintf(stderr, "CLI requested but device at %s does not support CommFPGA\n", vp);
+			fprintf(stderr, "Shell requested but device at %s does not support CommFPGA\n", vp);
 			FAIL(FLP_ARGS, cleanup);
 		}
 	}
